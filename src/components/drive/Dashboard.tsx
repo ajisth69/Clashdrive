@@ -244,9 +244,9 @@ export function Dashboard({
                         <span className="text-surface-900 font-medium truncate mr-4">
                           {u.fileName}
                         </span>
-                        <span className="text-surface-600 text-xs shrink-0">
+                        <span className="text-surface-600 text-xs shrink-0 font-mono">
                           {u.status === "uploading"
-                            ? `${u.uploadedChunks}/${u.totalChunks} chunks`
+                            ? `${Math.round((u.uploadedBytes / (u.totalBytes || 1)) * 100)}%`
                             : u.status === "finalizing"
                               ? "Finalizing..."
                               : u.status === "error"
@@ -256,8 +256,8 @@ export function Dashboard({
                       </div>
                       <ProgressBar
                         value={
-                          u.totalChunks > 0
-                            ? (u.uploadedChunks / u.totalChunks) * 100
+                          u.totalBytes > 0
+                            ? (u.uploadedBytes / u.totalBytes) * 100
                             : 0
                         }
                         color={u.status === "error" ? "brand" : "accent"}

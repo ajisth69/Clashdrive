@@ -37,7 +37,7 @@ async function uploadChunk(
 
   const uploaded = await client.uploadFile({
     file: fileToUpload,
-    workers: 1, // Must be 1 to prevent GramJS chunk ordering corruption
+    workers: 16, // Set to 16 parallel workers to maximize connection bandwidth saturation
     onProgress: (progress: number) => {
       onChunkProgress?.(progress);
     },
@@ -157,7 +157,7 @@ export async function uploadFile(
     }
   });
 
-  const results = await runWithConcurrency(tasks, 8); // 8 parallel 50MB segment uploads to fully saturate upload speed
+  const results = await runWithConcurrency(tasks, 4); // 4 parallel 50MB segment uploads to perfectly saturate without socket saturation
   results.sort((a, b) => a.index - b.index);
   const chunkMsgIds = results.map((r) => r.msgId);
 

@@ -320,15 +320,15 @@ function getDynamicConcurrency() {
 
   if (isMobile) {
     if (cores <= 2) {
-      return { segments: 2, workers: 3 }; // Ultra-safe low-end mobile (prevents UI/audio lag)
+      return { segments: 2, workers: 4 }; // Safe low-end mobile (8 streams)
     }
-    return { segments: 3, workers: 4 }; // Mid-range/high-end mobile (12 streams)
+    return { segments: 3, workers: 8 }; // Mid-range/high-end mobile (24 streams)
   }
 
   if (cores >= 8) {
-    return { segments: 4, workers: 8 }; // High-performance desktop (32 parallel streams)
+    return { segments: 4, workers: 16 }; // High-performance desktop (64 parallel streams - full speed blitz)
   }
-  return { segments: 3, workers: 6 }; // Standard desktop (18 streams)
+  return { segments: 3, workers: 12 }; // Standard desktop (36 streams)
 }
 
 /**
