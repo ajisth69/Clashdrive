@@ -260,11 +260,23 @@ export function useAuth() {
   );
 
   const logout = useCallback(async () => {
+    const activeId = localStorage.getItem(LS_ACTIVE_ACCOUNT);
     await destroyClient();
     localStorage.removeItem(LS_PHONE);
     localStorage.removeItem("tgcd_drive");
     localStorage.removeItem(LS_ACTIVE_ACCOUNT);
-    localStorage.removeItem(LS_SESSION); // Completely clear session string to prevent sticky auto-login loops
+    localStorage.removeItem(LS_SESSION);
+
+    if (activeId) {
+      const next = readAccounts().filter((account) => account.userId !== activeId);
+      writeAccounts(next);
+      setAccounts(next);
+      await saveCloudAccounts(next);
+    } else {
+      localStorage.removeItem(LS_ACCOUNTS);
+      setAccounts([]);
+    }
+
     setConnected(false);
     setUserProfile(null);
     setActiveAccountId(null);
