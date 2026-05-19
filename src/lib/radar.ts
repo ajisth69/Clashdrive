@@ -33,18 +33,18 @@ async function verifyDriveGroup(
 export async function scanForDriveGroup(
   client: TelegramClient
 ): Promise<DriveConfig | null> {
-  // Check localStorage first
-  const cached = localStorage.getItem(LS_DRIVE);
+  // Check sessionStorage first
+  const cached = sessionStorage.getItem(LS_DRIVE);
   if (cached) {
     try {
       const config = JSON.parse(cached) as DriveConfig;
       if (config.accessHash) {
         const verified = await verifyDriveGroup(client, config);
         if (verified) return verified;
-        localStorage.removeItem(LS_DRIVE);
+        sessionStorage.removeItem(LS_DRIVE);
       }
     } catch {
-      localStorage.removeItem(LS_DRIVE);
+      sessionStorage.removeItem(LS_DRIVE);
     }
   }
 
@@ -70,7 +70,7 @@ export async function scanForDriveGroup(
           chatTitle: channel.title,
           accessHash: channel.accessHash ? channel.accessHash.toString() : "0",
         };
-        localStorage.setItem(LS_DRIVE, JSON.stringify(config));
+        sessionStorage.setItem(LS_DRIVE, JSON.stringify(config));
         return config;
       }
     } catch {
@@ -106,7 +106,7 @@ export async function createDriveGroup(
     chatTitle: channel.title,
     accessHash: channel.accessHash ? channel.accessHash.toString() : "0",
   };
-  localStorage.setItem(LS_DRIVE, JSON.stringify(config));
+  sessionStorage.setItem(LS_DRIVE, JSON.stringify(config));
 
   return config;
 }

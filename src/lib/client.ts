@@ -18,7 +18,7 @@ export function setClient(client: TelegramClient): void {
 export function getClient(): TelegramClient {
   if (_client) return _client;
 
-  const saved = localStorage.getItem(LS_SESSION) ?? "";
+  const saved = sessionStorage.getItem(LS_SESSION) ?? "";
   const session = new StringSession(saved);
 
   _client = new TelegramClient(session, API_ID, API_HASH, {
@@ -42,11 +42,11 @@ export function createClientFromSession(sessionString = ""): TelegramClient {
 export function persistSession(): void {
   if (!_client) return;
   const token = (_client.session as StringSession).save();
-  localStorage.setItem(LS_SESSION, token);
+  sessionStorage.setItem(LS_SESSION, token);
 }
 
 export function getCurrentSessionString(): string {
-  if (!_client) return localStorage.getItem(LS_SESSION) ?? "";
+  if (!_client) return sessionStorage.getItem(LS_SESSION) ?? "";
   return (_client.session as StringSession).save();
 }
 
@@ -58,13 +58,13 @@ export async function destroyClient(): Promise<void> {
     await _client.disconnect();
     _client = null;
   }
-  localStorage.removeItem(LS_SESSION);
+  sessionStorage.removeItem(LS_SESSION);
 }
 
 /**
  * True when a session string already exists in storage.
  */
 export function hasPersistedSession(): boolean {
-  const s = localStorage.getItem(LS_SESSION);
+  const s = sessionStorage.getItem(LS_SESSION);
   return !!s && s.length > 0;
 }

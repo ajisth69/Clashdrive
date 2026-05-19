@@ -35,9 +35,11 @@ async function uploadChunk(
     `${fileName}.part${String(partIndex).padStart(4, "0")}`
   );
 
+  const idealWorkers = Math.min(4, Math.max(1, Math.ceil(blob.size / (1024 * 1024 * 2))));
+
   const uploaded = await client.uploadFile({
     file: fileToUpload,
-    workers: 16, // Set to 16 parallel workers to maximize connection bandwidth saturation
+    workers: idealWorkers,
     onProgress: (progress: number) => {
       onChunkProgress?.(progress);
     },

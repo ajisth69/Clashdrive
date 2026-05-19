@@ -341,7 +341,7 @@ export async function downloadFile(
   manifest: ChunkManifest,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<void> {
-  const { segments, workers } = getDynamicConcurrency();
+  const { segments } = getDynamicConcurrency();
   let streamsaver: typeof import("streamsaver") | null = null;
   try {
     streamsaver = await import("streamsaver");
@@ -359,6 +359,19 @@ export async function downloadFile(
   try {
     emitProgress();
 
+    // Pre-fetch all chunk messages in a single batch request to save round-trip connection overhead
+    const peer = new Api.InputPeerChannel({
+      channelId: bigInt(config.chatId),
+      accessHash: bigInt(config.accessHash),
+    });
+    const fetchedMessages = await client.getMessages(peer, { ids: manifest.chunks });
+    const messageMap = new Map<number, Api.Message>();
+    for (const msg of fetchedMessages) {
+      if (msg && msg.className === "Message") {
+        messageMap.set(msg.id, msg);
+      }
+    }
+
     if (streamsaver) {
       // Streaming download — avoids V8 heap pressure on huge files
       const fileStream = streamsaver.createWriteStream(manifest.fileName, {
@@ -370,36 +383,43 @@ export async function downloadFile(
       let writeLock = Promise.resolve();
 
       const tasks = manifest.chunks.map((msgId, index) => async () => {
-        const messages = await client.getMessages(
-          new Api.InputPeerChannel({ channelId: bigInt(config.chatId), accessHash: bigInt(config.accessHash) }),
-          { ids: [msgId] }
-        );
+        let message = messageMap.get(msgId);
+        if (!message) {
+          const messages = await client.getMessages(peer, { ids: [msgId] });
+          if (messages.length > 0 && messages[0]) {
+            message = messages[0];
+            messageMap.set(msgId, message);
+          } else {
+            throw new Error(`Message not found for chunk ${index}`);
+          }
+        }
+
+        const mediaSize = (message.media as any)?.document?.size || CHUNK_SIZE;
+        const idealWorkers = Math.min(4, Math.max(1, Math.ceil(Number(mediaSize) / (1024 * 1024 * 2))));
 
         let attempts = 0;
         while (attempts < 3) {
           try {
-            if (messages.length > 0 && messages[0]) {
-              const buffer = (await client.downloadMedia(messages[0], {
-                workers,
-                progressCallback: (dl: any, total: any) => {
-                  chunkProgress[index] = Number(dl);
-                },
-              } as any)) as Buffer | undefined;
+            const buffer = (await client.downloadMedia(message, {
+              workers: idealWorkers,
+              progressCallback: (dl: any, total: any) => {
+                chunkProgress[index] = Number(dl);
+              },
+            } as any)) as Buffer | undefined;
 
-              if (buffer && buffer.length > 0) {
-                chunkProgress[index] = buffer.length;
-                const arr = new Uint8Array(buffer);
-                writeLock = writeLock.then(async () => {
-                  pendingWrites.set(index, arr);
-                  while (pendingWrites.has(nextWriteIndex)) {
-                    await writer.write(pendingWrites.get(nextWriteIndex)!);
-                    pendingWrites.delete(nextWriteIndex);
-                    nextWriteIndex++;
-                  }
-                });
-                await writeLock;
-                return;
-              }
+            if (buffer && buffer.length > 0) {
+              chunkProgress[index] = buffer.length;
+              const arr = new Uint8Array(buffer);
+              writeLock = writeLock.then(async () => {
+                pendingWrites.set(index, arr);
+                while (pendingWrites.has(nextWriteIndex)) {
+                  await writer.write(pendingWrites.get(nextWriteIndex)!);
+                  pendingWrites.delete(nextWriteIndex);
+                  nextWriteIndex++;
+                }
+              });
+              await writeLock;
+              return;
             }
           } catch (e) {
             console.warn(`Chunk ${index} failed, retrying...`, e);
@@ -415,26 +435,33 @@ export async function downloadFile(
     } else {
       // Fallback: collect all buffers and trigger a download blob
       const tasks = manifest.chunks.map((msgId, index) => async () => {
-        const messages = await client.getMessages(
-          new Api.InputPeerChannel({ channelId: bigInt(config.chatId), accessHash: bigInt(config.accessHash) }),
-          { ids: [msgId] }
-        );
+        let message = messageMap.get(msgId);
+        if (!message) {
+          const messages = await client.getMessages(peer, { ids: [msgId] });
+          if (messages.length > 0 && messages[0]) {
+            message = messages[0];
+            messageMap.set(msgId, message);
+          } else {
+            throw new Error(`Message not found for chunk ${index}`);
+          }
+        }
+
+        const mediaSize = (message.media as any)?.document?.size || CHUNK_SIZE;
+        const idealWorkers = Math.min(4, Math.max(1, Math.ceil(Number(mediaSize) / (1024 * 1024 * 2))));
 
         let attempts = 0;
         while (attempts < 3) {
           try {
-            if (messages.length > 0 && messages[0]) {
-              const buffer = (await client.downloadMedia(messages[0], {
-                workers,
-                progressCallback: (dl: any, total: any) => {
-                  chunkProgress[index] = Number(dl);
-                },
-              } as any)) as Buffer | undefined;
+            const buffer = (await client.downloadMedia(message, {
+              workers: idealWorkers,
+              progressCallback: (dl: any, total: any) => {
+                chunkProgress[index] = Number(dl);
+              },
+            } as any)) as Buffer | undefined;
 
-              if (buffer && buffer.length > 0) {
-                chunkProgress[index] = buffer.length;
-                return { index, buffer: new Uint8Array(buffer) };
-              }
+            if (buffer && buffer.length > 0) {
+              chunkProgress[index] = buffer.length;
+              return { index, buffer: new Uint8Array(buffer) };
             }
           } catch (e) {
             console.warn(`Chunk ${index} failed, retrying...`, e);
@@ -474,7 +501,7 @@ export async function downloadFileToMemory(
   manifest: ChunkManifest,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<Blob> {
-  const { segments, workers } = getDynamicConcurrency();
+  const { segments } = getDynamicConcurrency();
   const chunkProgress = new Float64Array(manifest.chunks.length);
   const emitProgress = () => {
     const totalDownloaded = chunkProgress.reduce((a, b) => a + b, 0);
@@ -485,27 +512,47 @@ export async function downloadFileToMemory(
   try {
     emitProgress();
 
+    // Pre-fetch all chunk messages in a single batch request to save round-trip connection overhead
+    const peer = new Api.InputPeerChannel({
+      channelId: bigInt(config.chatId),
+      accessHash: bigInt(config.accessHash),
+    });
+    const fetchedMessages = await client.getMessages(peer, { ids: manifest.chunks });
+    const messageMap = new Map<number, Api.Message>();
+    for (const msg of fetchedMessages) {
+      if (msg && msg.className === "Message") {
+        messageMap.set(msg.id, msg);
+      }
+    }
+
     const tasks = manifest.chunks.map((msgId, index) => async () => {
-      const messages = await client.getMessages(
-        new Api.InputPeerChannel({ channelId: bigInt(config.chatId), accessHash: bigInt(config.accessHash) }),
-        { ids: [msgId] }
-      );
+      let message = messageMap.get(msgId);
+      if (!message) {
+        const messages = await client.getMessages(peer, { ids: [msgId] });
+        if (messages.length > 0 && messages[0]) {
+          message = messages[0];
+          messageMap.set(msgId, message);
+        } else {
+          throw new Error(`Message not found for chunk ${index}`);
+        }
+      }
+
+      const mediaSize = (message.media as any)?.document?.size || CHUNK_SIZE;
+      const idealWorkers = Math.min(4, Math.max(1, Math.ceil(Number(mediaSize) / (1024 * 1024 * 2))));
 
       let attempts = 0;
       while (attempts < 3) {
         try {
-          if (messages.length > 0 && messages[0]) {
-            const buffer = (await client.downloadMedia(messages[0], {
-              workers,
-              progressCallback: (dl: any, total: any) => {
-                chunkProgress[index] = Number(dl);
-              },
-            } as any)) as Buffer | undefined;
+          const buffer = (await client.downloadMedia(message, {
+            workers: idealWorkers,
+            progressCallback: (dl: any, total: any) => {
+              chunkProgress[index] = Number(dl);
+            },
+          } as any)) as Buffer | undefined;
 
-            if (buffer && buffer.length > 0) {
-              chunkProgress[index] = buffer.length;
-              return { index, buffer: new Uint8Array(buffer) };
-            }
+          if (buffer && buffer.length > 0) {
+            chunkProgress[index] = buffer.length;
+            return { index, buffer: new Uint8Array(buffer) };
           }
         } catch (e) {
           console.warn(`Chunk ${index} failed, retrying...`, e);

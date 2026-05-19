@@ -27,7 +27,7 @@ export const CHUNK_SIZE = 50 * 1024 * 1024;
 export const UPLOAD_WORKERS = 6;
 
 /**
- * localStorage keys
+ * sessionStorage keys
  */
 export const LS_SESSION = "tgcd_session";
 export const LS_PHONE = "tgcd_phone";
