@@ -395,7 +395,7 @@ export async function downloadFile(
         }
 
         const mediaSize = (message.media as any)?.document?.size || CHUNK_SIZE;
-        const idealWorkers = Math.min(4, Math.max(1, Math.ceil(Number(mediaSize) / (1024 * 1024 * 2))));
+        const idealWorkers = Math.min(16, Math.max(6, Math.ceil(Number(mediaSize) / (1024 * 1024 * 1.5))));
 
         let attempts = 0;
         while (attempts < 3) {
@@ -447,7 +447,7 @@ export async function downloadFile(
         }
 
         const mediaSize = (message.media as any)?.document?.size || CHUNK_SIZE;
-        const idealWorkers = Math.min(4, Math.max(1, Math.ceil(Number(mediaSize) / (1024 * 1024 * 2))));
+        const idealWorkers = Math.min(16, Math.max(6, Math.ceil(Number(mediaSize) / (1024 * 1024 * 1.5))));
 
         let attempts = 0;
         while (attempts < 3) {
@@ -538,7 +538,7 @@ export async function downloadFileToMemory(
       }
 
       const mediaSize = (message.media as any)?.document?.size || CHUNK_SIZE;
-      const idealWorkers = Math.min(4, Math.max(1, Math.ceil(Number(mediaSize) / (1024 * 1024 * 2))));
+      const idealWorkers = Math.min(16, Math.max(6, Math.ceil(Number(mediaSize) / (1024 * 1024 * 1.5))));
 
       let attempts = 0;
       while (attempts < 3) {

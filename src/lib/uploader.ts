@@ -35,7 +35,7 @@ async function uploadChunk(
     `${fileName}.part${String(partIndex).padStart(4, "0")}`
   );
 
-  const idealWorkers = Math.min(4, Math.max(1, Math.ceil(blob.size / (1024 * 1024 * 2))));
+  const idealWorkers = Math.min(16, Math.max(6, Math.ceil(blob.size / (1024 * 1024 * 1.5))));
 
   const uploaded = await client.uploadFile({
     file: fileToUpload,

@@ -22,8 +22,11 @@ export function getClient(): TelegramClient {
   const session = new StringSession(saved);
 
   _client = new TelegramClient(session, API_ID, API_HASH, {
-    connectionRetries: 5,
+    connectionRetries: 10,
     useWSS: true,
+    autoReconnect: true,
+    floodSleepThreshold: 300,
+    maxConcurrentDownloads: 32,
   });
 
   return _client;
@@ -31,8 +34,11 @@ export function getClient(): TelegramClient {
 
 export function createClientFromSession(sessionString = ""): TelegramClient {
   return new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
-    connectionRetries: 5,
+    connectionRetries: 10,
     useWSS: true,
+    autoReconnect: true,
+    floodSleepThreshold: 300,
+    maxConcurrentDownloads: 32,
   });
 }
 
