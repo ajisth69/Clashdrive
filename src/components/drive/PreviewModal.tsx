@@ -71,7 +71,8 @@ export function PreviewModal({ file, url, onClose }: PreviewModalProps) {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onClose]);
 
   // Text preview loader
   useEffect(() => {

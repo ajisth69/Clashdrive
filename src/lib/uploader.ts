@@ -1,5 +1,5 @@
 import { TelegramClient, Api } from "telegram";
-import { CHUNK_SIZE, UPLOAD_WORKERS } from "../config/telegram";
+import { CHUNK_SIZE } from "../config/telegram";
 import { buildManifest } from "./manifest";
 import type { UploadProgress, DriveConfig } from "../types";
 import bigInt from "big-integer";

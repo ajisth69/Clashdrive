@@ -285,7 +285,7 @@ export function Dashboard({
                     <span className="text-surface-900 font-medium truncate">
                       ⬇️ {downloadProgress.name}
                     </span>
-                    <span className="text-surface-600 text-xs">
+                    <span className="text-surface-600 text-xs font-mono">
                       {downloadProgress.progress}%
                     </span>
                   </div>

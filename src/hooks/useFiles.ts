@@ -49,17 +49,25 @@ export function useFiles() {
       topicId: number,
       file: File
     ) => {
-      await uploadFileLib(client, config, topicId, file, (progress) => {
-        setUploads((prev) => {
-          const idx = prev.findIndex((u) => u.fileId === progress.fileId);
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy[idx] = progress;
-            return copy;
-          }
-          return [...prev, progress];
+      const fileId = `${file.name}-${Date.now()}`;
+      try {
+        await uploadFileLib(client, config, topicId, file, (progress) => {
+          setUploads((prev) => {
+            const idx = prev.findIndex((u) => u.fileId === progress.fileId);
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = progress;
+              return copy;
+            }
+            return [...prev, progress];
+          });
         });
-      });
+      } finally {
+        // Auto-clear completed/errored uploads after 2 seconds
+        setTimeout(() => {
+          setUploads((prev) => prev.filter((u) => u.status === "uploading" || u.status === "preparing"));
+        }, 2000);
+      }
 
       // Refresh file list after upload completes
       fileCache.current.delete(topicId);
@@ -74,18 +82,23 @@ export function useFiles() {
   const downloadFile = useCallback(
     async (client: TelegramClient, config: DriveConfig, file: DriveFile) => {
       setDownloadProgress({ name: file.name, progress: 0 });
-      await downloadFileLib(
-        client,
-        config,
-        file.manifest,
-        (downloaded, total) => {
-          setDownloadProgress({
-            name: file.name,
-            progress: Math.round((downloaded / total) * 100),
-          });
-        }
-      );
-      setDownloadProgress(null);
+      try {
+        await downloadFileLib(
+          client,
+          config,
+          file.manifest,
+          (downloaded, total) => {
+            setDownloadProgress({
+              name: file.name,
+              progress: total > 0 ? Math.round((downloaded / total) * 100) : 0,
+            });
+          }
+        );
+      } catch (err) {
+        console.error("Download failed:", err);
+      } finally {
+        setDownloadProgress(null);
+      }
     },
     []
   );

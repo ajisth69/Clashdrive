@@ -136,7 +136,7 @@ export default function App() {
   const handleFileDrop = useCallback(
     async (droppedFiles: File[]) => {
       if (!client || !driveConfig || activeFolderId === null) return;
-      Promise.all(
+      await Promise.all(
         droppedFiles.map((file) =>
           uploadFile(client, driveConfig, activeFolderId, file).catch(console.error)
         )
@@ -256,33 +256,33 @@ export default function App() {
     <>
       <Dashboard
         client={client!}
-      driveConfig={driveConfig}
-      topics={topics}
-      files={files}
-      loadingFiles={loadingFiles}
-      uploads={uploads}
-      downloadProgress={downloadProgress}
-      onFolderClick={handleFolderClick}
-      onBackToRoot={handleBackToRoot}
-      onCreateFolder={handleCreateFolder}
-      onRenameFolder={handleRenameFolder}
-      onDeleteFolder={handleDeleteFolder}
-      onFileDrop={handleFileDrop}
-      onDownload={handleDownload}
-      onRenameFile={handleRenameFile}
-      onDeleteFile={handleDeleteFile}
-      onLogout={handleLogout}
-      userProfile={userProfile}
-      accounts={accounts}
-      activeAccountId={activeAccountId}
-      onAddAccount={handleAddAccount}
-      onSwitchAccount={handleSwitchAccount}
-      onRemoveAccount={removeAccount}
-      activeFolderId={activeFolderId}
-      filterTopics={filterTopics}
-      filterFiles={filterFiles}
-      onPreview={handlePreview}
-    />
+        driveConfig={driveConfig}
+        topics={topics}
+        files={files}
+        loadingFiles={loadingFiles}
+        uploads={uploads}
+        downloadProgress={downloadProgress}
+        onFolderClick={handleFolderClick}
+        onBackToRoot={handleBackToRoot}
+        onCreateFolder={handleCreateFolder}
+        onRenameFolder={handleRenameFolder}
+        onDeleteFolder={handleDeleteFolder}
+        onFileDrop={handleFileDrop}
+        onDownload={handleDownload}
+        onRenameFile={handleRenameFile}
+        onDeleteFile={handleDeleteFile}
+        onLogout={handleLogout}
+        userProfile={userProfile}
+        accounts={accounts}
+        activeAccountId={activeAccountId}
+        onAddAccount={handleAddAccount}
+        onSwitchAccount={handleSwitchAccount}
+        onRemoveAccount={removeAccount}
+        activeFolderId={activeFolderId}
+        filterTopics={filterTopics}
+        filterFiles={filterFiles}
+        onPreview={handlePreview}
+      />
     
     {previewFile && (
       <PreviewModal
