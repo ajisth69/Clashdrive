@@ -15,9 +15,9 @@ Welcome to **TG Cloud Drive** — a state-of-the-art, fully decentralized cloud 
 Deploy your own private instance of TG Cloud Drive in just one click. Both platforms serve the app as static assets directly from edge CDNs, meaning you will **never** pay for bandwidth or server compute, and it is 100% immune to server timeouts.
 
 ### Deploy to Vercel
-Click the button below to fork and deploy directly to Vercel. During setup, configure your `VITE_CLASHDB_URL` and `VITE_CLASHDB_PASSWORD` variables to enable instant account synchronization:
+Click the button below to fork and deploy directly to Vercel:
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fajisth%2Ftg-cloud-drive&env=VITE_CLASHDB_URL,VITE_CLASHDB_PASSWORD)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fajisth%2Ftg-cloud-drive)
 
 ### Deploy to Cloudflare Pages
 Deploy globally to Cloudflare's ultra-fast edge network with zero configuration:
@@ -31,7 +31,7 @@ Deploy globally to Cloudflare's ultra-fast edge network with zero configuration:
 *   **🌐 100% Serverless SPA:** Hosted entirely on static CDNs (Vercel/Cloudflare Pages). No heavy active backend means no CPU timeout issues or hosting costs.
 *   **🔒 Zero-Knowledge Local AES-GCM Encryption:** All files are encrypted *locally in your browser tab* before being sent across the network. Telegram only ever sees scrambled binary bits.
 *   **⚡ 100x Speed Upload & Download Streams:** Leverages direct multithreaded MTProto pipeline concurrency to max out your internet bandwidth.
-*   **📂 Infinite Nested Folders:** Organize files into folders structured dynamically via your own synchronized metadata database.
+*   **📂 Infinite Nested Folders:** Organize files into folders structured dynamically via local metadata.
 *   **🎬 In-Browser Media Streaming (Service Worker Proxy):** Stream high-definition movies and audio files progressively with instant scrubbing, buffering indicators, and zero memory crashes.
 *   **👥 Multi-Account Swapping:** Connect and switch between up to 3 Telegram accounts seamlessly with a premium dropdown selector.
 *   **🔍 Power Shortcuts & Clear Triggers:** Focus search instantly via `Ctrl + K` or `/` keys, with dynamic one-tap search field clearing.
@@ -47,14 +47,14 @@ TG Cloud Drive is built from the ground up to follow **Zero-Knowledge** serverle
                   ┌───────────────────────────────┐
                   │      User's Browser Tab       │
                   │  (React 19, MTProto Client)   │
-                  └───────┬───────────────┬───────┘
-                          │               │
-      [1MB AES-GCM Chunks]│               │[Index Manifests]
-                          ▼               ▼
-            ┌───────────────────┐   ┌───────────────────┐
-            │ Telegram MTProto  │   │  ClashDB / KV DB  │
-            │  (Storage Core)   │   │  (Folders/Files)  │
-            └───────────────────┘   └───────────────────┘
+                  └───────────────┬───────────────┘
+                                  │
+              [1MB AES-GCM Chunks]│
+                                  ▼
+                    ┌───────────────────┐
+                    │ Telegram MTProto  │
+                    │  (Storage Core)   │
+                    └───────────────────┘
 ```
 
 ### 1. In-Browser MTProto Protocol
@@ -85,13 +85,13 @@ TG Cloud Drive enforces strict privacy practices:
 | Component | Security Configuration | Storage Location |
 | :--- | :--- | :--- |
 | **Authentication Keys** | Encrypted Session Strings | Browser IndexedDB (Local only) |
-| **File Index Metadata** | AES-GCM Encrypted JSON | ClashDB / KV Store (Synchronized) |
+| **File Index Metadata** | AES-GCM Encrypted JSON | Browser localStorage (Local only) |
 | **Raw Storage Chunks** | Encrypted Binary Blocks | Telegram Datacenters (Cloud) |
 | **Intermediate Servers** | **None** | App is 100% serverless static HTML/JS |
 
 ### Key Disclosures:
-* **No Server Footprint:** Because there is no active backend server, no database connection strings or secrets can ever be leaked or exposed by database breaches.
-* **Symmetric Sealing:** The decryption key for every uploaded file is generated inside the browser and embedded directly in the index manifest. Since the manifest itself can be stored in your private ClashDB with strong authentication, only you have access to the keys.
+* **No Server Footprint:** Because there is no active backend server, all data stays local in your browser. No secrets can ever be leaked or exposed.
+* **Symmetric Sealing:** The decryption key for every uploaded file is generated inside the browser and embedded directly in the index manifest stored locally, so only you have access to the keys.
 
 ---
 
@@ -111,18 +111,7 @@ Make sure you have Node.js (v18+) installed:
 npm install
 ```
 
-### 3. Configure Local Environment
-Create a copy of `.env.example` named `.env.local` inside the root folder:
-```bash
-cp .env.example .env.local
-```
-Open `.env.local` and configure your database endpoint:
-```text
-VITE_CLASHDB_URL=https://your-clashdb-instance.vercel.app
-VITE_CLASHDB_PASSWORD=your_secure_db_password
-```
-
-### 4. Start the Dev Server
+### 3. Start the Dev Server
 Run Vite in development mode:
 ```bash
 npm run dev

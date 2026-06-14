@@ -10,7 +10,7 @@ import {
   persistSession,
   setClient,
 } from "../lib/client";
-import { loadCloudAccounts, saveCloudAccounts } from "../lib/cloudDb";
+
 import type { AuthState, SavedAccount, UserProfile } from "../types";
 
 const LS_ACCOUNTS = "tgcd_accounts";
@@ -96,24 +96,13 @@ export function useAuth() {
       localStorage.setItem(LS_ACTIVE_ACCOUNT, saved.userId);
       setAccounts(next);
       setActiveAccountId(saved.userId);
-      await saveCloudAccounts(next);
+
     },
     []
   );
 
   const tryAutoConnect = useCallback(async (): Promise<boolean> => {
-    let localAccounts = readAccounts();
-    const cloudAccounts = await loadCloudAccounts();
-    if (cloudAccounts.length) {
-      localAccounts = [
-        ...localAccounts,
-        ...cloudAccounts.filter(
-          (cloud) => !localAccounts.some((local) => local.userId === cloud.userId)
-        ),
-      ].slice(0, 3);
-      writeAccounts(localAccounts);
-      setAccounts(localAccounts);
-    }
+    const localAccounts = readAccounts();
 
     const preferred =
       localAccounts.find((account) => account.userId === activeAccountId) ??
@@ -271,7 +260,7 @@ export function useAuth() {
       const next = readAccounts().filter((account) => account.userId !== activeId);
       writeAccounts(next);
       setAccounts(next);
-      await saveCloudAccounts(next);
+
     } else {
       localStorage.removeItem(LS_ACCOUNTS);
       setAccounts([]);
@@ -288,7 +277,7 @@ export function useAuth() {
       const next = readAccounts().filter((account) => account.userId !== userId);
       writeAccounts(next);
       setAccounts(next);
-      await saveCloudAccounts(next);
+
       if (activeAccountId === userId) {
         await logout();
       }
