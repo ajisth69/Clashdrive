@@ -175,6 +175,15 @@ export async function uploadFile(
 
   const { segments, workers } = getDynamicUploadConcurrency();
 
+  let abortPromise: Promise<never> | null = null;
+  let abortHandler: (() => void) | null = null;
+  if (signal) {
+    abortPromise = new Promise((_, reject) => {
+      abortHandler = () => reject(new DOMException("Upload cancelled", "AbortError"));
+      signal.addEventListener("abort", abortHandler);
+    });
+  }
+
   try {
     if (signal?.aborted) {
       throw new DOMException("Upload cancelled", "AbortError");
@@ -243,7 +252,13 @@ export async function uploadFile(
       throw new Error(`Failed to upload chunk ${i}`);
     });
 
-    const results = await runWithConcurrency(tasks, segments, signal);
+    let results: any[];
+    const uploadPromise = runWithConcurrency(tasks, segments, signal);
+    if (abortPromise) {
+      results = await Promise.race([uploadPromise, abortPromise]);
+    } else {
+      results = await uploadPromise;
+    }
     results.sort((a, b) => a.index - b.index);
     const chunkMsgIds = results.map((r) => r.msgId);
 
@@ -292,6 +307,9 @@ export async function uploadFile(
 
     throw err;
   } finally {
+    if (signal && abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+    }
     clearInterval(progressInterval);
   }
 }

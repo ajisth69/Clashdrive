@@ -40,6 +40,7 @@ export function useFiles() {
 
   const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
   const downloadAbortControllers = useRef<Map<string, AbortController>>(new Map());
+  const batchAbortController = useRef<AbortController | null>(null);
 
   /**
    * Load files from a given topic. Uses local cache if available.
@@ -147,8 +148,10 @@ export function useFiles() {
             }, 2000);
 
             // Refresh file list after upload completes
-            fileCache.current.delete(topicId);
-            await loadFiles(client, config, topicId, true);
+            if (!controller.signal.aborted) {
+              fileCache.current.delete(topicId);
+              await loadFiles(client, config, topicId, true);
+            }
           }
         };
 
@@ -232,6 +235,13 @@ export function useFiles() {
     async (client: TelegramClient, config: DriveConfig, filesToDownload: DriveFile[]) => {
       if (filesToDownload.length === 0) return;
 
+      if (batchAbortController.current) {
+        batchAbortController.current.abort();
+      }
+      const masterController = new AbortController();
+      batchAbortController.current = masterController;
+      const signal = masterController.signal;
+
       downloadAbortControllers.current.forEach((controller) => controller.abort());
       downloadAbortControllers.current.clear();
 
@@ -261,9 +271,13 @@ export function useFiles() {
       });
 
       const tasks = filesToDownload.map((file) => async () => {
+        if (signal.aborted) return;
         const downloadId = `${file.id}-${Date.now()}`;
         const controller = new AbortController();
         downloadAbortControllers.current.set(downloadId, controller);
+        const onMasterAbort = () => controller.abort();
+        signal.addEventListener("abort", onMasterAbort);
+
         try {
           await ensureConnected();
           await downloadFileLib(
@@ -279,14 +293,27 @@ export function useFiles() {
         } catch (err) {
           console.error(`Download failed for ${file.name}:`, err);
         } finally {
+          signal.removeEventListener("abort", onMasterAbort);
           downloadAbortControllers.current.delete(downloadId);
         }
       });
 
+      let abortPromise: Promise<never> | null = null;
+      let abortHandler: (() => void) | null = null;
+      abortPromise = new Promise((_, reject) => {
+        abortHandler = () => reject(new DOMException("Download aborted", "AbortError"));
+        signal.addEventListener("abort", abortHandler);
+      });
+
       try {
-        await runWithConcurrency(tasks, 3);
+        const batchPromise = runWithConcurrency(tasks, 3);
+        await Promise.race([batchPromise, abortPromise]);
+      } catch (err) {
+        console.warn("Batch download aborted:", err);
       } finally {
+        if (abortHandler) signal.removeEventListener("abort", abortHandler);
         setDownloadProgress(null);
+        batchAbortController.current = null;
       }
     },
     []
@@ -296,6 +323,9 @@ export function useFiles() {
    * Cancel the active file download.
    */
   const cancelDownload = useCallback(() => {
+    if (batchAbortController.current) {
+      batchAbortController.current.abort();
+    }
     downloadAbortControllers.current.forEach((controller) => controller.abort());
     downloadAbortControllers.current.clear();
     setDownloadProgress(null);
