@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
-import { API_HASH, API_ID, LS_PHONE, LS_SESSION } from "../config/telegram";
+import { API_HASH, API_ID, LS_PHONE, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, APP_VERSION } from "../config/telegram";
 import {
   createClientFromSession,
   destroyClient,
@@ -168,6 +168,9 @@ export function useAuth() {
         autoReconnect: true,
         floodSleepThreshold: 300,
         maxConcurrentDownloads: 128,
+        deviceModel: DEVICE_MODEL,
+        systemVersion: SYSTEM_VERSION,
+        appVersion: APP_VERSION,
       });
       clientRef.current = client;
       setClient(client);

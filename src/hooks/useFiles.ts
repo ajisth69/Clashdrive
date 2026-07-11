@@ -28,6 +28,7 @@ export function useFiles() {
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [indexing, setIndexing] = useState(false);
+  const indexingRef = useRef(false);
   const [indexingProgress, setIndexingProgress] = useState({ current: 0, total: 0 });
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
@@ -372,7 +373,8 @@ export function useFiles() {
       config: DriveConfig,
       folders: { id: number; title: string }[]
     ) => {
-      if (indexing) return;
+      if (indexingRef.current) return;
+      indexingRef.current = true;
       setIndexing(true);
       setIndexingProgress({ current: 0, total: folders.length });
 
@@ -393,8 +395,9 @@ export function useFiles() {
         await new Promise((r) => setTimeout(r, 100));
       }
       setIndexing(false);
+      indexingRef.current = false;
     },
-    [indexing]
+    []
   );
 
   /**

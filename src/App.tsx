@@ -266,7 +266,7 @@ export default function App() {
     if (client && driveConfig && topics.length > 0 && !indexing) {
       indexAllFolders(client, driveConfig, topics);
     }
-  }, [client, driveConfig, topics, indexing, indexAllFolders]);
+  }, [client, driveConfig, topics, indexAllFolders]);
 
   // When user navigates into a folder, load its files
   useEffect(() => {

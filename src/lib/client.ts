@@ -1,6 +1,6 @@
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
-import { API_ID, API_HASH, LS_SESSION } from "../config/telegram";
+import { API_ID, API_HASH, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, APP_VERSION } from "../config/telegram";
 
 let _client: TelegramClient | null = null;
 let _monitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -31,6 +31,9 @@ export function getClient(): TelegramClient {
     autoReconnect: true,
     floodSleepThreshold: 300,
     maxConcurrentDownloads: 128,
+    deviceModel: DEVICE_MODEL,
+    systemVersion: SYSTEM_VERSION,
+    appVersion: APP_VERSION,
   });
 
   return _client;
@@ -43,6 +46,9 @@ export function createClientFromSession(sessionString = ""): TelegramClient {
     autoReconnect: true,
     floodSleepThreshold: 300,
     maxConcurrentDownloads: 128,
+    deviceModel: DEVICE_MODEL,
+    systemVersion: SYSTEM_VERSION,
+    appVersion: APP_VERSION,
   });
 }
 
