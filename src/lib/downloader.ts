@@ -707,6 +707,15 @@ export async function downloadFile(
 
   let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
 
+  let abortPromise: Promise<never> | null = null;
+  let abortHandler: (() => void) | null = null;
+  if (signal) {
+    abortPromise = new Promise((_, reject) => {
+      abortHandler = () => reject(new DOMException("Download aborted", "AbortError"));
+      signal.addEventListener("abort", abortHandler);
+    });
+  }
+
   try {
     if (signal?.aborted) {
       throw new DOMException("Download aborted", "AbortError");
@@ -785,7 +794,12 @@ export async function downloadFile(
         throw new Error(`Failed to download chunk ${index}`);
       });
 
-      await runWithConcurrency(tasks, segments, signal);
+      const downloadPromise = runWithConcurrency(tasks, segments, signal);
+      if (abortPromise) {
+        await Promise.race([downloadPromise, abortPromise]);
+      } else {
+        await downloadPromise;
+      }
       await activeWriter.close();
     } else {
       // Fallback: collect all buffers and trigger a download blob
@@ -830,7 +844,13 @@ export async function downloadFile(
         throw new Error(`Failed to download chunk ${index}`);
       });
 
-      const results = await runWithConcurrency(tasks, segments, signal);
+      let results: any[];
+      const downloadPromise = runWithConcurrency(tasks, segments, signal);
+      if (abortPromise) {
+        results = await Promise.race([downloadPromise, abortPromise]);
+      } else {
+        results = await downloadPromise;
+      }
       results.sort((a, b) => a.index - b.index);
 
       const blob = new Blob(results.map((r) => r.buffer));
@@ -853,6 +873,9 @@ export async function downloadFile(
     }
     throw err;
   } finally {
+    if (signal && abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+    }
     clearInterval(progressInterval);
     emitProgress(); // final emit
   }
@@ -876,6 +899,15 @@ export async function downloadFileToMemory(
     onProgress?.(totalDownloaded, manifest.fileSize);
   };
   const progressInterval = setInterval(emitProgress, 100);
+
+  let abortPromise: Promise<never> | null = null;
+  let abortHandler: (() => void) | null = null;
+  if (signal) {
+    abortPromise = new Promise((_, reject) => {
+      abortHandler = () => reject(new DOMException("Download aborted", "AbortError"));
+      signal.addEventListener("abort", abortHandler);
+    });
+  }
 
   try {
     if (signal?.aborted) {
@@ -931,11 +963,20 @@ export async function downloadFileToMemory(
       throw new Error(`Failed to download chunk ${index}`);
     });
 
-    const results = await runWithConcurrency(tasks, segments, signal);
+    let results: any[];
+    const downloadPromise = runWithConcurrency(tasks, segments, signal);
+    if (abortPromise) {
+      results = await Promise.race([downloadPromise, abortPromise]);
+    } else {
+      results = await downloadPromise;
+    }
     results.sort((a, b) => a.index - b.index);
 
     return new Blob(results.map((r) => r.buffer));
   } finally {
+    if (signal && abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+    }
     clearInterval(progressInterval);
     emitProgress(); // final emit
   }

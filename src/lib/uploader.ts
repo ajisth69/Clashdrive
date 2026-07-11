@@ -280,16 +280,14 @@ export async function uploadFile(
 
     // Clean up uploaded orphaned chunks from Telegram
     if (uploadedMsgIds.length > 0) {
-      try {
-        await client.invoke(
-          new Api.channels.DeleteMessages({
-            channel: peer,
-            id: uploadedMsgIds,
-          })
-        );
-      } catch (deleteErr) {
+      client.invoke(
+        new Api.channels.DeleteMessages({
+          channel: peer,
+          id: uploadedMsgIds,
+        })
+      ).catch((deleteErr) => {
         console.warn("Failed to delete orphaned chunks after cancellation:", deleteErr);
-      }
+      });
     }
 
     throw err;

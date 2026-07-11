@@ -18,35 +18,40 @@ export function useDrive() {
   const initDrive = useCallback(async (client: TelegramClient) => {
     setSyncing(true);
     setSyncStatus("Scanning your chats for an existing drive...");
-    await ensureConnected();
+    try {
+      await ensureConnected();
 
-    let config = await scanForDriveGroup(client);
-    if (!config) {
-      setSyncStatus("No drive found. Creating a new supergroup...");
-      config = await createDriveGroup(client);
-    }
+      let config = await scanForDriveGroup(client);
+      if (!config) {
+        setSyncStatus("No drive found. Creating a new supergroup...");
+        config = await createDriveGroup(client);
+      }
 
-    setDriveConfig(config);
-    setSyncStatus("Loading folders...");
+      setDriveConfig(config);
+      setSyncStatus("Loading folders...");
 
-    let folders = await getTopics(client, config);
+      let folders = await getTopics(client, config);
 
-    const defaultTitles = ["Videos", "Audio", "Photos", "Documents"];
-    for (const title of defaultTitles) {
-      if (!folders.some((f) => f.title.toLowerCase() === title.toLowerCase())) {
-        setSyncStatus(`Initializing ${title} folder...`);
-        const topic = await createTopic(client, config, title);
-        if (topic) {
-          folders.push(topic);
+      const defaultTitles = ["Videos", "Audio", "Photos", "Documents"];
+      for (const title of defaultTitles) {
+        if (!folders.some((f) => f.title.toLowerCase() === title.toLowerCase())) {
+          setSyncStatus(`Initializing ${title} folder...`);
+          const topic = await createTopic(client, config, title);
+          if (topic) {
+            folders.push(topic);
+          }
         }
       }
+
+      setTopics(folders);
+      topicsCache.current.set(config.chatId, folders);
+      setSyncStatus("");
+    } catch (err) {
+      console.error("Failed to initialize drive:", err);
+      setSyncStatus("Failed to set up drive. Please refresh.");
+    } finally {
+      setSyncing(false);
     }
-
-    setTopics(folders);
-    topicsCache.current.set(config.chatId, folders);
-
-    setSyncing(false);
-    setSyncStatus("");
   }, []);
 
   /**
