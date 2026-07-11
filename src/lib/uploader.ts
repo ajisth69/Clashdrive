@@ -46,14 +46,7 @@ function getFloodWaitSeconds(err: unknown) {
  */
 function getDynamicUploadConcurrency() {
   const cores = navigator.hardwareConcurrency || 4;
-  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 
-  if (isMobile) {
-    if (cores <= 2) {
-      return { segments: 1, workers: 4 };
-    }
-    return { segments: 1, workers: 6 };
-  }
   if (cores >= 12) {
     return { segments: 3, workers: 8 };
   }
@@ -204,7 +197,7 @@ export async function uploadFile(
       const blob = file.slice(start, end);
 
       let attempts = 0;
-      while (attempts < 3) {
+      while (attempts < 5) {
         if (signal?.aborted) {
           throw new DOMException("Upload cancelled", "AbortError");
         }
@@ -250,7 +243,7 @@ export async function uploadFile(
             continue;
           }
           attempts++;
-          if (attempts < 3) {
+          if (attempts < 5) {
             console.warn(`Upload chunk ${i} failed, retrying...`, err);
             await new Promise((r) => setTimeout(r, 1000 * attempts));
             continue;

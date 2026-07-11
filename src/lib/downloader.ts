@@ -17,6 +17,13 @@ function getErrorMessage(err: unknown) {
   return "Unknown error";
 }
 
+function getFloodWaitSeconds(err: unknown) {
+  if (typeof err !== "object" || !err || !("errorMessage" in err)) return null;
+  const errorMessage = (err as { errorMessage?: unknown }).errorMessage;
+  if (typeof errorMessage !== "string" || !errorMessage.startsWith("FLOOD_WAIT_")) return null;
+  return parseInt(errorMessage.split("_").pop() || "", 10) || 30;
+}
+
 function getMessageDocumentInfo(message: Api.Message | undefined): {
   mimeType?: string;
   fileName?: string;
@@ -249,7 +256,7 @@ export async function downloadChunkToCache(
   }
 
   let attempts = 0;
-  while (attempts < 3) {
+  while (attempts < 5) {
     try {
       const buffer = await downloadMediaWithWorkers(client, message, { workers: 8 });
 
@@ -259,6 +266,13 @@ export async function downloadChunkToCache(
         return arr;
       }
     } catch (e) {
+      const wait = getFloodWaitSeconds(e);
+      if (wait !== null) {
+        console.warn(`FloodWait: sleeping ${wait}s then retrying chunk ${chunkIndex}`);
+        await new Promise((r) => setTimeout(r, wait * 1000));
+        attempts++;
+        continue;
+      }
       console.warn(`Chunk ${chunkIndex} download failed, retrying...`, e);
     }
     attempts++;
@@ -301,9 +315,8 @@ export async function handleStreamRequest(
 
   // The browser usually requests large ranges. Satisfy in 4MB steps so the player
   // starts immediately without waiting on a whole 50MB Telegram part.
-  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-  const STREAM_STEP = (isMobile ? 8 : 24) * 1024 * 1024;
-  const STREAM_REQUEST_SIZE = (isMobile ? 1024 : 2048) * 1024;
+  const STREAM_STEP = 24 * 1024 * 1024;
+  const STREAM_REQUEST_SIZE = 2048 * 1024;
 
   const hasRange = typeof range === "string" && range.startsWith("bytes=");
   let start = 0;
@@ -661,14 +674,6 @@ export async function renameDriveFile(
 
 function getDynamicConcurrency() {
   const cores = navigator.hardwareConcurrency || 4;
-  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-
-  if (isMobile) {
-    if (cores <= 2) {
-      return { segments: 2, workers: 4 };
-    }
-    return { segments: 4, workers: 6 };
-  }
 
   if (cores >= 12) {
     return { segments: 10, workers: 10 };
@@ -756,7 +761,7 @@ export async function downloadFile(
         }
 
         let attempts = 0;
-        while (attempts < 3) {
+        while (attempts < 5) {
           if (signal?.aborted) {
             throw new DOMException("Download aborted", "AbortError");
           }
@@ -786,6 +791,16 @@ export async function downloadFile(
               return;
             }
           } catch (e) {
+            if (signal?.aborted) {
+              throw new DOMException("Download aborted", "AbortError");
+            }
+            const wait = getFloodWaitSeconds(e);
+            if (wait !== null) {
+              console.warn(`FloodWait: sleeping ${wait}s then retrying chunk ${index}`);
+              await new Promise((r) => setTimeout(r, wait * 1000));
+              attempts++;
+              continue;
+            }
             console.warn(`Chunk ${index} failed, retrying...`, e);
           }
           attempts++;
@@ -819,7 +834,7 @@ export async function downloadFile(
         }
 
         let attempts = 0;
-        while (attempts < 3) {
+        while (attempts < 5) {
           if (signal?.aborted) {
             throw new DOMException("Download aborted", "AbortError");
           }
@@ -836,6 +851,16 @@ export async function downloadFile(
               return { index, buffer: new Uint8Array(buffer) };
             }
           } catch (e) {
+            if (signal?.aborted) {
+              throw new DOMException("Download aborted", "AbortError");
+            }
+            const wait = getFloodWaitSeconds(e);
+            if (wait !== null) {
+              console.warn(`FloodWait: sleeping ${wait}s then retrying chunk ${index}`);
+              await new Promise((r) => setTimeout(r, wait * 1000));
+              attempts++;
+              continue;
+            }
             console.warn(`Chunk ${index} failed, retrying...`, e);
           }
           attempts++;
