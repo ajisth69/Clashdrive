@@ -74,7 +74,8 @@ async function uploadChunk(
   partIndex: number,
   fileName: string,
   workersLimit: number,
-  onChunkProgress?: (progress: number) => void
+  onChunkProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<number> {
   const fileToUpload = new File(
     [blob],
@@ -90,6 +91,10 @@ async function uploadChunk(
       onChunkProgress?.(progress);
     },
   });
+
+  if (signal?.aborted) {
+    throw new DOMException("Upload cancelled", "AbortError");
+  }
 
   const result = await client.invoke(
     new Api.messages.SendMedia({
@@ -215,8 +220,18 @@ export async function uploadFile(
             workers,
             (progress) => {
               chunkProgress[i] = progress * blob.size;
-            }
+            },
+            signal
           );
+          if (signal?.aborted) {
+            client.invoke(
+              new Api.channels.DeleteMessages({
+                channel: peer,
+                id: [msgId],
+              })
+            ).catch(() => {});
+            throw new DOMException("Upload cancelled", "AbortError");
+          }
           // Register message ID for potential cleanup
           uploadedMsgIds.push(msgId);
           // Mark chunk fully done
