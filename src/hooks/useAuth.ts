@@ -5,10 +5,12 @@ import { API_HASH, API_ID, LS_PHONE, LS_SESSION } from "../config/telegram";
 import {
   createClientFromSession,
   destroyClient,
+  ensureConnected,
   getCurrentSessionString,
   hasPersistedSession,
   persistSession,
   setClient,
+  startConnectionMonitor,
 } from "../lib/client";
 
 import type { AuthState, SavedAccount, UserProfile } from "../types";
@@ -130,6 +132,11 @@ export function useAuth() {
       if (!profile.id) return false;
       persistSession();
       await rememberAccount(profile, getCurrentSessionString());
+      startConnectionMonitor();
+      // Brief stabilization delay — lets the WebSocket fully settle
+      // before the app fires post-login API bursts (drive scan, indexing, etc.)
+      await new Promise((r) => setTimeout(r, 500));
+      await ensureConnected();
       setUserProfile(profile);
       setConnected(true);
       setState((s) => ({ ...s, step: "done" }));
@@ -199,6 +206,10 @@ export function useAuth() {
           persistSession();
           const profile = await extractProfile(client);
           await rememberAccount(profile, getCurrentSessionString());
+          startConnectionMonitor();
+          // Brief stabilization delay
+          await new Promise((r) => setTimeout(r, 500));
+          await ensureConnected();
           setUserProfile(profile);
           setConnected(true);
           setState((s) => ({ ...s, step: "done", loading: false }));
@@ -246,6 +257,9 @@ export function useAuth() {
         const profile = await extractProfile(client);
         persistSession();
         await rememberAccount(profile, getCurrentSessionString());
+        startConnectionMonitor();
+        await new Promise((r) => setTimeout(r, 500));
+        await ensureConnected();
         setUserProfile(profile);
         setConnected(true);
         setState((s) => ({ ...s, step: "done", loading: false }));

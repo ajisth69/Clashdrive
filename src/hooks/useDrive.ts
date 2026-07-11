@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import type { TelegramClient } from "telegram";
 import { scanForDriveGroup, createDriveGroup } from "../lib/radar";
 import { getTopics, createTopic, deleteTopic, renameTopic } from "../lib/topics";
+import { ensureConnected } from "../lib/client";
 import type { DriveConfig, TopicFolder } from "../types";
 
 export function useDrive() {
@@ -17,6 +18,7 @@ export function useDrive() {
   const initDrive = useCallback(async (client: TelegramClient) => {
     setSyncing(true);
     setSyncStatus("Scanning your chats for an existing drive...");
+    await ensureConnected();
 
     let config = await scanForDriveGroup(client);
     if (!config) {
@@ -53,6 +55,7 @@ export function useDrive() {
   const refreshTopics = useCallback(
     async (client: TelegramClient) => {
       if (!driveConfig) return;
+      await ensureConnected();
       const folders = await getTopics(client, driveConfig);
       setTopics(folders);
       topicsCache.current.set(driveConfig.chatId, folders);
@@ -66,6 +69,7 @@ export function useDrive() {
   const addFolder = useCallback(
     async (client: TelegramClient, name: string) => {
       if (!driveConfig) return;
+      await ensureConnected();
       const topic = await createTopic(client, driveConfig, name);
       if (topic) {
         setTopics((prev) => [...prev, topic]);
@@ -80,6 +84,7 @@ export function useDrive() {
   const removeFolder = useCallback(
     async (client: TelegramClient, topicId: number) => {
       if (!driveConfig) return;
+      await ensureConnected();
       const ok = await deleteTopic(client, driveConfig, topicId);
       if (ok) {
         setTopics((prev) => prev.filter((t) => t.id !== topicId));
@@ -93,6 +98,7 @@ export function useDrive() {
       if (!driveConfig) return false;
       const nextTitle = title.trim();
       if (!nextTitle) return false;
+      await ensureConnected();
       const ok = await renameTopic(client, driveConfig, topicId, nextTitle);
       if (ok) {
         setTopics((prev) =>

@@ -3,6 +3,7 @@ import type { TelegramClient } from "telegram";
 import { listFilesInTopic } from "../lib/downloader";
 import { uploadFile as uploadFileLib } from "../lib/uploader";
 import { deleteDriveFile, downloadFile as downloadFileLib, normalizeRenamedFileName, renameDriveFile } from "../lib/downloader";
+import { ensureConnected } from "../lib/client";
 import type { DriveFile, UploadProgress, DriveConfig, DownloadProgress } from "../types";
 
 async function runWithConcurrency<T>(
@@ -55,6 +56,7 @@ export function useFiles() {
       }
 
       setLoadingFiles(true);
+      await ensureConnected();
       const result = await listFilesInTopic(client, config, topicId);
       fileCache.current.set(topicId, result);
       setFiles(result);
@@ -113,6 +115,7 @@ export function useFiles() {
       return new Promise<void>((resolve, reject) => {
         const task = async () => {
           try {
+            await ensureConnected();
             await uploadFileLib(
               client,
               config,
@@ -197,6 +200,7 @@ export function useFiles() {
         speedBps: 0,
       });
       try {
+        await ensureConnected();
         await downloadFileLib(
           client,
           config,
@@ -260,6 +264,7 @@ export function useFiles() {
         const controller = new AbortController();
         downloadAbortControllers.current.set(downloadId, controller);
         try {
+          await ensureConnected();
           await downloadFileLib(
             client,
             config,
@@ -297,6 +302,7 @@ export function useFiles() {
 
   const deleteFile = useCallback(
     async (client: TelegramClient, config: DriveConfig, file: DriveFile) => {
+      await ensureConnected();
       const ok = await deleteDriveFile(client, config, file);
       if (!ok) return false;
       fileCache.current.delete(file.topicId);
@@ -315,6 +321,7 @@ export function useFiles() {
     ) => {
       const nextName = normalizeRenamedFileName(file, name);
       if (!nextName) return false;
+      await ensureConnected();
       const ok = await renameDriveFile(client, config, file, nextName);
       if (!ok) return false;
       const renamed = {
@@ -373,6 +380,7 @@ export function useFiles() {
       for (const folder of folders) {
         try {
           if (!fileCache.current.has(folder.id)) {
+            await ensureConnected();
             const result = await listFilesInTopic(client, config, folder.id);
             fileCache.current.set(folder.id, result);
           }
