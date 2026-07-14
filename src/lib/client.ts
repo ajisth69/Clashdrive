@@ -1,6 +1,6 @@
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
-import { API_ID, API_HASH, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, APP_VERSION } from "../config/telegram";
+import { getApiCredentials, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, APP_VERSION } from "../config/telegram";
 
 let _client: TelegramClient | null = null;
 let _monitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -24,8 +24,9 @@ export function getClient(): TelegramClient {
 
   const saved = localStorage.getItem(LS_SESSION) ?? "";
   const session = new StringSession(saved);
+  const { apiId, apiHash } = getApiCredentials();
 
-  _client = new TelegramClient(session, API_ID, API_HASH, {
+  _client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 10,
     useWSS: true,
     autoReconnect: true,
@@ -39,8 +40,15 @@ export function getClient(): TelegramClient {
   return _client;
 }
 
-export function createClientFromSession(sessionString = ""): TelegramClient {
-  return new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
+export function createClientFromSession(
+  sessionString = "",
+  apiId?: number,
+  apiHash?: string
+): TelegramClient {
+  const creds = getApiCredentials();
+  const id = apiId ?? creds.apiId;
+  const hash = apiHash ?? creds.apiHash;
+  return new TelegramClient(new StringSession(sessionString), id, hash, {
     connectionRetries: 10,
     useWSS: true,
     autoReconnect: true,

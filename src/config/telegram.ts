@@ -1,9 +1,14 @@
 /**
- * Telegram MTProto API credentials.
- * Using the official Telegram Web K application keys—safe for client-side use.
+ * Retrieve Telegram MTProto API credentials dynamically from localStorage.
  */
-export const API_ID = 2496;
-export const API_HASH = "8da85b0d5bfe62527e5b244c209159c3";
+export function getApiCredentials(): { apiId: number; apiHash: string } {
+  const idStr = localStorage.getItem("tgcd_api_id") || "";
+  const hash = localStorage.getItem("tgcd_api_hash") || "";
+  return {
+    apiId: idStr ? parseInt(idStr, 10) : 0,
+    apiHash: hash,
+  };
+}
 
 /**
  * Client Identification for Telegram Active Sessions screen

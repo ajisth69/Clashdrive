@@ -51,7 +51,7 @@ export interface DownloadProgress {
   speedBps: number;
 }
 
-export type AuthStep = "phone" | "otp" | "password" | "done";
+export type AuthStep = "phone" | "credentials" | "otp" | "password" | "done";
 
 export interface UserProfile {
   id: string;
@@ -75,6 +75,8 @@ export interface SavedAccount {
 export interface AuthState {
   step: AuthStep;
   phone: string;
+  apiId?: number;
+  apiHash?: string;
   loading: boolean;
   error: string | null;
 }

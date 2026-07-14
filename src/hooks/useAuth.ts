@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
-import { API_HASH, API_ID, LS_PHONE, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, APP_VERSION } from "../config/telegram";
+import { getApiCredentials, LS_PHONE, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, APP_VERSION } from "../config/telegram";
 import {
   createClientFromSession,
   destroyClient,
@@ -49,7 +49,7 @@ function getErrorMessage(err: unknown) {
 
 export function useAuth() {
   const [state, setState] = useState<AuthState>({
-    step: "phone",
+    step: "credentials",
     phone: localStorage.getItem(LS_PHONE) || "",
     loading: false,
     error: null,
@@ -87,13 +87,14 @@ export function useAuth() {
 
   const rememberAccount = useCallback(
     async (profile: UserProfile, session: string) => {
+      const { apiId, apiHash } = getApiCredentials();
       const saved: SavedAccount = {
         userId: profile.id,
         session,
         username: profile.username,
         idName: profileName(profile),
-        apiHash: API_HASH,
-        apiId: API_ID,
+        apiHash,
+        apiId,
         avatarUrl: profile.avatarUrl,
         updatedAt: Date.now(),
       };
@@ -121,8 +122,14 @@ export function useAuth() {
     if (!preferred && !hasPersistedSession()) return false;
 
     try {
+      if (preferred) {
+        localStorage.setItem("tgcd_api_id", preferred.apiId.toString());
+        localStorage.setItem("tgcd_api_hash", preferred.apiHash);
+      }
       const client = createClientFromSession(
-        preferred?.session ?? localStorage.getItem(LS_SESSION) ?? ""
+        preferred?.session ?? localStorage.getItem(LS_SESSION) ?? "",
+        preferred?.apiId,
+        preferred?.apiHash
       );
       clientRef.current = client;
       setClient(client);
@@ -149,7 +156,7 @@ export function useAuth() {
   }, [activeAccountId, extractProfile, rememberAccount]);
 
   const startAuth = useCallback(
-    async (phone: string) => {
+    async (phone: string, apiId: number, apiHash: string) => {
       if (readAccounts().length >= 3) {
         setState((s) => ({
           ...s,
@@ -161,8 +168,10 @@ export function useAuth() {
 
       setState((s) => ({ ...s, loading: true, error: null, phone }));
       localStorage.setItem(LS_PHONE, phone);
+      localStorage.setItem("tgcd_api_id", apiId.toString());
+      localStorage.setItem("tgcd_api_hash", apiHash);
 
-      const client = new TelegramClient(new StringSession(""), API_ID, API_HASH, {
+      const client = new TelegramClient(new StringSession(""), apiId, apiHash, {
         connectionRetries: 10,
         useWSS: true,
         autoReconnect: true,
@@ -223,7 +232,13 @@ export function useAuth() {
     },
     [extractProfile, rememberAccount]
   );
+  const goToPhone = useCallback((apiId: number, apiHash: string) => {
+    setState((s) => ({ ...s, step: "phone", apiId, apiHash, error: null }));
+  }, []);
 
+  const goToCredentials = useCallback(() => {
+    setState((s) => ({ ...s, step: "credentials", error: null }));
+  }, []);
   const beginAddAccount = useCallback(async () => {
     if (readAccounts().length >= 3) {
       setState((s) => ({
@@ -239,7 +254,7 @@ export function useAuth() {
     }
     setConnected(false);
     setUserProfile(null);
-    setState({ step: "phone", phone: "", loading: false, error: null });
+    setState({ step: "credentials", phone: "", apiId: undefined, apiHash: undefined, loading: false, error: null });
   }, []);
 
   const switchAccount = useCallback(
@@ -253,7 +268,10 @@ export function useAuth() {
         if (!account.session) {
           throw new Error("No local session found on this device. Please log in.");
         }
-        const client = createClientFromSession(account.session);
+        localStorage.setItem("tgcd_api_id", account.apiId.toString());
+        localStorage.setItem("tgcd_api_hash", account.apiHash);
+
+        const client = createClientFromSession(account.session, account.apiId, account.apiHash);
         setClient(client);
         clientRef.current = client;
         await client.connect();
@@ -271,7 +289,7 @@ export function useAuth() {
         // Force authentication flow for this account
         setConnected(false);
         setUserProfile(null);
-        setState({ step: "phone", phone: "", loading: false, error: getErrorMessage(err) });
+        setState({ step: "credentials", phone: "", loading: false, error: getErrorMessage(err) });
       }
     },
     [activeAccountId, extractProfile, rememberAccount]
@@ -298,7 +316,7 @@ export function useAuth() {
     setConnected(false);
     setUserProfile(null);
     setActiveAccountId(null);
-    setState({ step: "phone", phone: "", loading: false, error: null });
+    setState({ step: "credentials", phone: "", loading: false, error: null });
   }, []);
 
   const removeAccount = useCallback(
@@ -332,6 +350,8 @@ export function useAuth() {
     accounts,
     activeAccountId,
     tryAutoConnect,
+    goToPhone,
+    goToCredentials,
     startAuth,
     submitOtp,
     submitPassword,
