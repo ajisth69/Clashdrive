@@ -4,9 +4,25 @@ import type { ChunkManifest, DriveFile, DriveConfig } from "../types";
 import { buildManifest, parseManifest } from "./manifest";
 import bigInt from "big-integer";
 import { CHUNK_SIZE } from "../config/telegram";
+import { getHelperClient } from "./client";
+import { getCachedChunk, setCachedChunk } from "./cache";
 
-// Module-level cache for message objects to avoid redundant Telegram API round-trips
-const messageCache = new Map<number, Api.Message>();
+// Module-level cache for message objects to avoid redundant Telegram API round-trips (bounded to max 200 entries)
+const g = (typeof window !== "undefined" ? window : {}) as any;
+const MAX_MESSAGE_CACHE_SIZE = 200;
+const messageCache: Map<number, Api.Message> = g.__messageCache || (g.__messageCache = new Map<number, Api.Message>());
+
+function setCachedMessage(msgId: number, message: Api.Message): void {
+  if (messageCache.has(msgId)) {
+    messageCache.delete(msgId);
+  } else if (messageCache.size >= MAX_MESSAGE_CACHE_SIZE) {
+    const oldestKey = messageCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      messageCache.delete(oldestKey);
+    }
+  }
+  messageCache.set(msgId, message);
+}
 
 function getErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
@@ -47,6 +63,7 @@ async function downloadMediaWithWorkers(
   message: Api.Message,
   options: {
     workers?: number;
+    partSizeKb?: number;
     progressCallback?: (dl: bigInt.BigInteger, total: bigInt.BigInteger) => void;
   } = {}
 ): Promise<Buffer> {
@@ -71,6 +88,7 @@ async function downloadMediaWithWorkers(
     const buffer = await client.downloadFile(inputLocation, {
       dcId: doc.dcId,
       fileSize: doc.size,
+      partSizeKb: options.partSizeKb || 512,
       progressCallback: options.progressCallback,
       msgData,
     });
@@ -100,6 +118,7 @@ async function downloadMediaWithWorkers(
     const buffer = await client.downloadFile(inputLocation, {
       dcId: photo.dcId,
       fileSize: bigInt(fileSize),
+      partSizeKb: options.partSizeKb || 512,
       progressCallback: options.progressCallback,
       msgData,
     });
@@ -174,13 +193,20 @@ function baseNameWithoutExtension(fileName: string): string {
 
 export function normalizeRenamedFileName(file: DriveFile, name: string): string {
   const trimmed = name.trim();
-  const ext =
-    extensionFromName(file.chunkFileName) ||
-    extensionFromName(file.name) ||
-    extensionFromName(file.manifest.fileName);
   if (!trimmed) return "";
-  if (!ext) return trimmed;
-  return `${baseNameWithoutExtension(trimmed).trim() || "Untitled"}${ext}`;
+
+  // If user provided a name with an explicit extension, keep it
+  if (hasExtension(trimmed)) {
+    return trimmed;
+  }
+
+  // Otherwise fallback to original file's extension if available
+  const originalExt =
+    extensionFromName(file.name) ||
+    extensionFromName(file.manifest.fileName) ||
+    extensionFromName(file.chunkFileName);
+
+  return originalExt ? `${trimmed}${originalExt}` : trimmed;
 }
 
 
@@ -205,7 +231,7 @@ export async function preFetchMessages(
         const messages = await client.getMessages(peer, { ids: missingIds.slice(i, i + batchSize) });
         for (const msg of messages) {
           if (msg && msg.className === "Message") {
-            messageCache.set(msg.id, msg as Api.Message);
+            setCachedMessage(msg.id, msg as Api.Message);
           }
         }
       }
@@ -218,7 +244,32 @@ export async function preFetchMessages(
 /**
  * Memory cache for active preview chunks: fileId -> Map<chunkIndex, Uint8Array>
  */
-export const previewChunkCache = new Map<string, Map<number, Uint8Array>>();
+const g2 = (typeof window !== "undefined" ? window : {}) as any;
+export const previewChunkCache: Map<string, Map<number, Uint8Array>> = g2.__previewChunkCache || (g2.__previewChunkCache = new Map<string, Map<number, Uint8Array>>());
+
+const activePrefetchJobs = new Set<string>();
+
+async function triggerBackgroundPrefetch(
+  client: TelegramClient,
+  config: DriveConfig,
+  fileId: string,
+  manifest: ChunkManifest,
+  chunkIndex: number
+) {
+  const jobKey = `${fileId}-${chunkIndex}`;
+  if (activePrefetchJobs.has(jobKey)) return;
+  activePrefetchJobs.add(jobKey);
+
+  try {
+    // Use the primary client directly to avoid connection handshake lag
+    await downloadChunkToCache(client, config, fileId, manifest, chunkIndex);
+  } catch (err) {
+    console.warn(`[PREFETCH] Failed to prefetch chunk ${chunkIndex} to cache:`, err);
+  } finally {
+    activePrefetchJobs.delete(jobKey);
+  }
+}
+
 
 /**
  * Downloads a single file chunk and caches it in memory for instant playback.
@@ -228,15 +279,26 @@ export async function downloadChunkToCache(
   config: DriveConfig,
   fileId: string,
   manifest: ChunkManifest,
-  chunkIndex: number
+  chunkIndex: number,
+  limitBytes?: number
 ): Promise<Uint8Array> {
+  // 1. Check in-memory cache (only for full chunks)
   let cached = previewChunkCache.get(fileId);
   if (!cached) {
     cached = new Map<number, Uint8Array>();
     previewChunkCache.set(fileId, cached);
   }
-  if (cached.has(chunkIndex)) {
+  if (!limitBytes && cached.has(chunkIndex)) {
     return cached.get(chunkIndex)!;
+  }
+
+  // 2. Check IndexedDB persistent cache (only for full chunks)
+  if (!limitBytes) {
+    const persisted = await getCachedChunk(fileId, chunkIndex);
+    if (persisted) {
+      cached.set(chunkIndex, persisted);
+      return persisted;
+    }
   }
 
   const msgId = manifest.chunks[chunkIndex];
@@ -252,17 +314,64 @@ export async function downloadChunkToCache(
       throw new Error(`Message not found for chunk ${chunkIndex}`);
     }
     message = messages[0] as Api.Message;
-    messageCache.set(msgId, message);
+    setCachedMessage(msgId, message);
   }
 
   let attempts = 0;
   while (attempts < 5) {
     try {
-      const buffer = await downloadMediaWithWorkers(client, message, { workers: 8 });
+      let buffer: ArrayBuffer | Uint8Array;
+      
+      // If limitBytes is specified, download only a slice of the document using iterDownload
+      if (limitBytes && message.media) {
+        let targetDcId: number | undefined;
+        const media = message.media;
+        if (media.className === "MessageMediaDocument" && (media as Api.MessageMediaDocument).document) {
+          targetDcId = ((media as Api.MessageMediaDocument).document as Api.Document).dcId;
+        } else if (media.className === "MessageMediaPhoto" && (media as Api.MessageMediaPhoto).photo) {
+          targetDcId = ((media as Api.MessageMediaPhoto).photo as Api.Photo).dcId;
+        }
 
-      if (buffer && buffer.length > 0) {
+        const actualSize = (media as any).document?.size || (media as any).photo?.sizes?.pop()?.size || limitBytes;
+        const bytesToDownload = Math.min(limitBytes, actualSize);
+
+        const chunksList: Uint8Array[] = [];
+        let bytesReceived = 0;
+        const iterParams = {
+          file: media,
+          offset: bigInt(0),
+          limit: bytesToDownload,
+          requestSize: 128 * 1024,
+          dcId: targetDcId,
+        };
+
+        for await (const chunk of client.iterDownload(iterParams)) {
+          const chunkData = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          chunksList.push(chunkData);
+          bytesReceived += chunkData.length;
+          if (bytesReceived >= bytesToDownload) break;
+        }
+
+        const combined = new Uint8Array(bytesReceived);
+        let writeOffset = 0;
+        for (const ch of chunksList) {
+          combined.set(ch, writeOffset);
+          writeOffset += ch.length;
+        }
+        buffer = combined;
+      } else {
+        buffer = await downloadMediaWithWorkers(client, message, { workers: 8 });
+      }
+
+      if (buffer && buffer.byteLength > 0) {
         const arr = new Uint8Array(buffer);
-        cached.set(chunkIndex, arr);
+        // Only write to memory cache and IndexedDB if it was a FULL chunk download
+        if (!limitBytes) {
+          cached.set(chunkIndex, arr);
+          if (chunkIndex === 0) {
+            setCachedChunk(fileId, chunkIndex, arr).catch(() => {});
+          }
+        }
         return arr;
       }
     } catch (e) {
@@ -279,6 +388,53 @@ export async function downloadChunkToCache(
     await new Promise((r) => setTimeout(r, 1000 * attempts));
   }
   throw new Error(`Failed to download chunk ${chunkIndex}`);
+}
+
+export async function downloadThumbnailById(
+  client: TelegramClient,
+  config: DriveConfig,
+  msgId: number
+): Promise<Uint8Array> {
+  const peer = new Api.InputPeerChannel({
+    channelId: bigInt(config.chatId),
+    accessHash: bigInt(config.accessHash),
+  });
+
+  const messages = await client.getMessages(peer, { ids: [msgId] });
+  if (!messages.length || !messages[0] || messages[0].className !== "Message") {
+    throw new Error(`Message not found for thumbnail ${msgId}`);
+  }
+  const message = messages[0] as Api.Message;
+  const buffer = await downloadMediaWithWorkers(client, message, { workers: 4 });
+  return new Uint8Array(buffer);
+}
+
+class BiquadFilter {
+  b0: number; b1: number; b2: number;
+  a1: number; a2: number;
+  x1 = 0; x2 = 0;
+  y1 = 0; y2 = 0;
+
+  constructor(cutoff: number, sampleRate: number) {
+    const ff = Math.min(0.45, cutoff / sampleRate);
+    const ita = 1.0 / Math.tan(Math.PI * ff);
+    const q = Math.sqrt(2.0);
+    const den = 1.0 + q * ita + ita * ita;
+    this.b0 = 1.0 / den;
+    this.b1 = 2.0 / den;
+    this.b2 = 1.0 / den;
+    this.a1 = 2.0 * (1.0 - ita * ita) / den;
+    this.a2 = (1.0 - q * ita + ita * ita) / den;
+  }
+
+  process(x: number): number {
+    const y = this.b0 * x + this.b1 * this.x1 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1;
+    this.x1 = x;
+    this.y2 = this.y1;
+    this.y1 = y;
+    return y;
+  }
 }
 
 export async function handleStreamRequest(
@@ -313,14 +469,60 @@ export async function handleStreamRequest(
     return;
   }
 
-  // The browser usually requests large ranges. Satisfy in 4MB steps so the player
-  // starts immediately without waiting on a whole 50MB Telegram part.
-  const STREAM_STEP = 24 * 1024 * 1024;
-  const STREAM_REQUEST_SIZE = 2048 * 1024;
+  const STREAM_REQUEST_SIZE = 1024 * 1024;
+
+  // Check if file is a DSD audio format (.dsf or .dff)
+  const isDsfFile = file.name.toLowerCase().endsWith(".dsf");
+  let dsdHeader = { dataOffset: 0, dataSize: 0, channels: 2, sampleRate: 2822400, blockSize: 4096 };
+
+  if (isDsfFile) {
+    try {
+      // Chunk 0 contains the DSD header information
+      const headerData = await downloadChunkToCache(client, config, file.id.toString(), file.manifest, 0);
+      if (headerData && headerData.length >= 80) {
+        const view = new DataView(headerData.buffer, headerData.byteOffset, headerData.byteLength);
+        if (view.getUint32(0, true) === 0x20445344) { // "DSD "
+          let offset = 28;
+          while (offset < headerData.length - 12) {
+            const chunkHeader = view.getUint32(offset, true);
+            const chunkSize = Number(view.getBigUint64(offset + 4, true));
+            if (chunkHeader === 0x20746d66) { // "fmt "
+              dsdHeader.channels = view.getUint32(offset + 24, true);
+              dsdHeader.sampleRate = view.getUint32(offset + 28, true);
+              if (chunkSize >= 48) {
+                dsdHeader.blockSize = view.getUint32(offset + 44, true);
+              }
+            } else if (chunkHeader === 0x61746164) { // "data"
+              dsdHeader.dataOffset = offset + 12;
+              dsdHeader.dataSize = chunkSize - 12;
+              break;
+            }
+            offset += chunkSize;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to parse DSD header:", e);
+    }
+  }
+
+  if (isDsfFile && (dsdHeader.dataSize === 0 || dsdHeader.channels <= 0 || dsdHeader.sampleRate <= 0)) {
+    dsdHeader.dataOffset = 80;
+    dsdHeader.dataSize = file.size - 80;
+    dsdHeader.channels = 2;
+    dsdHeader.sampleRate = 2822400;
+  }
+
+  const wavDataSize = Math.floor(dsdHeader.dataSize / 4);
+  const wavTotalSize = 44 + wavDataSize;
+
+  const wavSampleRate = dsdHeader.sampleRate / 64;
+  const lpFilterLeft = isDsfFile ? new BiquadFilter(16000, wavSampleRate) : null;
+  const lpFilterRight = isDsfFile ? new BiquadFilter(16000, wavSampleRate) : null;
 
   const hasRange = typeof range === "string" && range.startsWith("bytes=");
   let start = 0;
-  let requestedEnd = file.size - 1;
+  let requestedEnd = (isDsfFile ? wavTotalSize : file.size) - 1;
 
   if (hasRange) {
     const firstRange = range.replace(/bytes=/, "").split(",")[0].trim();
@@ -329,7 +531,7 @@ export async function handleStreamRequest(
     if (!startPart && endPart) {
       const suffixLength = parseInt(endPart, 10);
       if (!Number.isNaN(suffixLength)) {
-        start = Math.max(file.size - suffixLength, 0);
+        start = Math.max((isDsfFile ? wavTotalSize : file.size) - suffixLength, 0);
       }
     } else {
       const parsedStart = parseInt(startPart || "0", 10);
@@ -345,12 +547,27 @@ export async function handleStreamRequest(
     }
   }
 
-  start = Math.max(0, Math.min(start, file.size - 1));
-  requestedEnd = Math.max(start, Math.min(requestedEnd, file.size - 1));
+  start = Math.max(0, Math.min(start, (isDsfFile ? wavTotalSize : file.size) - 1));
+  requestedEnd = Math.max(start, Math.min(requestedEnd, (isDsfFile ? wavTotalSize : file.size) - 1));
+
+  // Adaptive range step size
+  const isInitialRequest = start === 0;
+  const isEarlyRequest = start < 8 * 1024 * 1024;
+  const STREAM_STEP = isInitialRequest ? 1 * 1024 * 1024 : isEarlyRequest ? 4 * 1024 * 1024 : 12 * 1024 * 1024;
+
   const end = hasRange
     ? Math.min(requestedEnd, start + STREAM_STEP - 1)
     : requestedEnd;
   const contentLength = end - start + 1;
+
+  // Range alignment for block-based decoders (DSD decimation requires block group = 4096 * 2 bytes = 2048 WAV bytes)
+  const alignedStart = isDsfFile
+    ? (start < 44 ? 0 : Math.floor((start - 44) / 2048) * 2048 + 44)
+    : start;
+  const alignedEnd = isDsfFile
+    ? (end < 44 ? 43 : Math.ceil((end + 1 - 44) / 2048) * 2048 + 44 - 1)
+    : end;
+
   const peer = new Api.InputPeerChannel({
     channelId: bigInt(config.chatId),
     accessHash: bigInt(config.accessHash),
@@ -372,6 +589,100 @@ export async function handleStreamRequest(
     const copy = new Uint8Array(bytes.length);
     copy.set(bytes);
     port.postMessage({ type: "CHUNK", chunk: copy.buffer }, [copy.buffer]);
+  };
+
+  // Stateless progressive range slicer to handle arbitrary browser request alignments
+  let bytesDiscarded = 0;
+  let bytesSentToPort = 0;
+  const discardPrefix = start - alignedStart;
+  const targetBytes = contentLength;
+
+  const sendBytesSliced = (bytes: Uint8Array) => {
+    if (aborted || bytesSentToPort >= targetBytes) return;
+
+    let data = bytes;
+    if (bytesDiscarded < discardPrefix) {
+      const remainingToDiscard = discardPrefix - bytesDiscarded;
+      if (data.length <= remainingToDiscard) {
+        bytesDiscarded += data.length;
+        return;
+      }
+      data = data.slice(remainingToDiscard);
+      bytesDiscarded = discardPrefix;
+    }
+
+    const remainingToSent = targetBytes - bytesSentToPort;
+    if (data.length > remainingToSent) {
+      data = data.slice(0, remainingToSent);
+    }
+
+    if (data.length > 0) {
+      sendBytes(data);
+      bytesSentToPort += data.length;
+    }
+  };
+
+  // State and logic for on-the-fly DSD decoding
+  let dsdBuffer = new Uint8Array(0);
+  const processAndSendDsdBytes = (rawDsdBytes: Uint8Array) => {
+    if (aborted) return;
+    const newBuf = new Uint8Array(dsdBuffer.length + rawDsdBytes.length);
+    newBuf.set(dsdBuffer, 0);
+    newBuf.set(rawDsdBytes, dsdBuffer.length);
+    dsdBuffer = newBuf;
+
+    const blockSize = dsdHeader.blockSize || 4096;
+    const channels = dsdHeader.channels || 2;
+    const groupSize = blockSize * channels;
+
+    const numGroups = Math.floor(dsdBuffer.length / groupSize);
+    if (numGroups === 0) return;
+
+    const samplesPerChannelPerGroup = blockSize / 8;
+    const pcmBytes = new Uint8Array(numGroups * samplesPerChannelPerGroup * channels * 2);
+    const pcmView = new DataView(pcmBytes.buffer);
+
+    let pcmOffset = 0;
+    for (let g = 0; g < numGroups; g++) {
+      const groupStart = g * groupSize;
+      
+      for (let s = 0; s < samplesPerChannelPerGroup; s++) {
+        // Decode left channel (channel 0)
+        const leftByteOffset = groupStart + (0 * blockSize) + (s * 8);
+        let leftOnes = 0;
+        for (let b = 0; b < 8; b++) {
+          let temp = dsdBuffer[leftByteOffset + b];
+          while (temp > 0) {
+            leftOnes += temp & 1;
+            temp >>= 1;
+          }
+        }
+        const leftVal = (leftOnes / 32) - 1.0;
+        const leftFiltered = lpFilterLeft ? lpFilterLeft.process(leftVal) : leftVal;
+        const leftSample = Math.max(-32768, Math.min(32767, leftFiltered * 32767));
+        pcmView.setInt16(pcmOffset, leftSample, true);
+        pcmOffset += 2;
+
+        // Decode right channel (channel 1)
+        const rightByteOffset = groupStart + (1 * blockSize) + (s * 8);
+        let rightOnes = 0;
+        for (let b = 0; b < 8; b++) {
+          let temp = dsdBuffer[rightByteOffset + b];
+          while (temp > 0) {
+            rightOnes += temp & 1;
+            temp >>= 1;
+          }
+        }
+        const rightVal = (rightOnes / 32) - 1.0;
+        const rightFiltered = lpFilterRight ? lpFilterRight.process(rightVal) : rightVal;
+        const rightSample = Math.max(-32768, Math.min(32767, rightFiltered * 32767));
+        pcmView.setInt16(pcmOffset, rightSample, true);
+        pcmOffset += 2;
+      }
+    }
+
+    sendBytesSliced(pcmBytes);
+    dsdBuffer = dsdBuffer.slice(numGroups * groupSize);
   };
 
   const getChunkMessage = async (chunkIndex: number) => {
@@ -429,7 +740,11 @@ export async function handleStreamRequest(
         dataToSend = dataToSend.slice(0, remaining);
       }
 
-      sendBytes(dataToSend);
+      if (isDsfFile) {
+        processAndSendDsdBytes(dataToSend);
+      } else {
+        sendBytesSliced(dataToSend);
+      }
       bytesSent += dataToSend.length;
       if (bytesSent >= bytesNeeded) break;
     }
@@ -438,37 +753,109 @@ export async function handleStreamRequest(
   };
 
   try {
+    let dsdStartOffset = 0;
+    let dsdEndOffset = 0;
+    if (isDsfFile) {
+      const pcmByteStart = Math.max(44, alignedStart) - 44;
+      const pcmByteEnd = Math.min(wavTotalSize - 1, alignedEnd) - 44;
+      dsdStartOffset = dsdHeader.dataOffset + pcmByteStart * 4;
+      dsdEndOffset = dsdHeader.dataOffset + (pcmByteEnd + 1) * 4 - 1;
+    }
+
+    const firstMsgChunkIdx = Math.floor((isDsfFile ? dsdStartOffset : alignedStart) / CHUNK_SIZE);
+
+    // Pre-warm target DC connection before initiating the stream loop
+    if (file.manifest.chunks.length > 0) {
+      try {
+        const firstMsg = await getChunkMessage(firstMsgChunkIdx);
+        if (firstMsg?.media) {
+          let targetDcId: number | undefined;
+          if (firstMsg.media.className === "MessageMediaDocument" && (firstMsg.media as Api.MessageMediaDocument).document) {
+            targetDcId = ((firstMsg.media as Api.MessageMediaDocument).document as Api.Document).dcId;
+          } else if (firstMsg.media.className === "MessageMediaPhoto" && (firstMsg.media as Api.MessageMediaPhoto).photo) {
+            targetDcId = ((firstMsg.media as Api.MessageMediaPhoto).photo as Api.Photo).dcId;
+          }
+          if (targetDcId) {
+            await client.getSender(targetDcId);
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to pre-warm stream sender connection:", err);
+      }
+    }
+
     port.postMessage({
       type: "HEADER",
       status: hasRange ? 206 : 200,
       start,
       end,
-      totalSize: file.size,
+      totalSize: isDsfFile ? wavTotalSize : file.size,
       contentLength,
-      mimeType,
+      mimeType: isDsfFile ? "audio/wav" : mimeType,
     });
 
-    let cursor = start;
-    while (cursor <= end && !aborted) {
+    if (isDsfFile && alignedStart < 44) {
+      const wavHeader = new ArrayBuffer(44);
+      const wavView = new DataView(wavHeader);
+      const writeString = (view: DataView, offset: number, string: string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      };
+      const wavSampleRate = dsdHeader.sampleRate / 64;
+      const wavByteRate = wavSampleRate * dsdHeader.channels * 2;
+      const wavBlockAlign = dsdHeader.channels * 2;
+
+      writeString(wavView, 0, 'RIFF');
+      wavView.setUint32(4, 36 + wavDataSize, true);
+      writeString(wavView, 8, 'WAVE');
+      writeString(wavView, 12, 'fmt ');
+      wavView.setUint32(16, 16, true);
+      wavView.setUint16(20, 1, true);
+      wavView.setUint16(22, dsdHeader.channels, true);
+      wavView.setUint32(24, wavSampleRate, true);
+      wavView.setUint32(28, wavByteRate, true);
+      wavView.setUint16(32, wavBlockAlign, true);
+      wavView.setUint16(34, 16, true);
+      writeString(wavView, 36, 'data');
+      wavView.setUint32(40, wavDataSize, true);
+
+      const headerBytes = new Uint8Array(wavHeader);
+      sendBytesSliced(headerBytes);
+    }
+
+    let cursor = isDsfFile ? dsdStartOffset : alignedStart;
+    const finalEnd = isDsfFile ? dsdEndOffset : alignedEnd;
+
+    while (cursor <= finalEnd && !aborted) {
       const chunkIndex = Math.floor(cursor / CHUNK_SIZE);
+
+      // Prefetch the next chunk in the background using the warm primary client
+      const nextChunkIndex = chunkIndex + 1;
+      if (nextChunkIndex < file.manifest.chunks.length) {
+        const cacheMap = previewChunkCache.get(fileId);
+        if (!cacheMap || !cacheMap.has(nextChunkIndex)) {
+          triggerBackgroundPrefetch(client, config, fileId, file.manifest, nextChunkIndex);
+        }
+      }
+
       const chunkStart = chunkIndex * CHUNK_SIZE;
       const offsetInChunk = cursor - chunkStart;
-      const bytesNeeded = Math.min(end - cursor + 1, CHUNK_SIZE - offsetInChunk);
+      const bytesNeeded = Math.min(finalEnd - cursor + 1, CHUNK_SIZE - offsetInChunk);
 
       const cachedData = previewChunkCache.get(fileId)?.get(chunkIndex);
       if (cachedData) {
         const slice = cachedData.slice(offsetInChunk, offsetInChunk + bytesNeeded);
-        sendBytes(slice);
+        if (isDsfFile) {
+          processAndSendDsdBytes(slice);
+        } else {
+          sendBytesSliced(slice);
+        }
         cursor += slice.length;
         continue;
       }
 
       const message = await getChunkMessage(chunkIndex);
-      if (mimeType === "application/octet-stream") {
-        const docInfo = getMessageDocumentInfo(message);
-        mimeType = docInfo.mimeType || mimeType;
-      }
-
       let dcId: number | undefined;
       const media = message.media;
       if (media) {
@@ -612,29 +999,55 @@ export async function listFilesInTopic(
       offsetId = minId;
     }
 
+    // 1. First pass: parse manifests and collect missing chunk message IDs & thumb message IDs
+    const manifestItems: { msg: Api.Message; manifest: any }[] = [];
+    const missingChunkIds: number[] = [];
+
     for (const m of messageById.values()) {
       if (!m.message) continue;
-
       const manifest = parseManifest(m.message);
       if (manifest) {
-        let chunkInfo = getMessageDocumentInfo(messageById.get(manifest.chunks[0]));
-        if (!chunkInfo.mimeType && manifest.chunks[0]) {
-          const chunkMessages = await client.getMessages(peer, {
-            ids: [manifest.chunks[0]],
-          });
-          chunkInfo = getMessageDocumentInfo(chunkMessages[0] as Api.Message);
+        manifestItems.push({ msg: m, manifest });
+        const firstChunkId = manifest.chunks[0];
+        if (firstChunkId && !messageById.has(firstChunkId)) {
+          missingChunkIds.push(firstChunkId);
         }
-        files.push({
-          id: m.id,
-          name: manifest.fileName,
-          size: manifest.fileSize,
-          topicId,
-          manifest,
-          date: m.date,
-          mimeType: chunkInfo.mimeType,
-          chunkFileName: chunkInfo.fileName,
+}
+  }
+
+    // 2. Batch fetch all missing messages in one single call
+    if (missingChunkIds.length > 0) {
+      try {
+        const chunkMessages = await client.getMessages(peer, {
+          ids: missingChunkIds,
         });
+        for (const chunkMsg of chunkMessages) {
+          if (chunkMsg && chunkMsg.id) {
+            messageById.set(chunkMsg.id, chunkMsg as Api.Message);
+          }
+        }
+      } catch (err) {
+        console.warn("[listFilesInTopic] Failed to batch fetch chunk messages:", err);
       }
+    }
+
+    // 3. Second pass: construct files list
+    for (const item of manifestItems) {
+      const { msg, manifest } = item;
+      const chunkMsg = messageById.get(manifest.chunks[0]);
+      const chunkInfo = getMessageDocumentInfo(chunkMsg);
+      const thumbMsg = undefined;
+      files.push({
+        id: msg.id,
+        name: manifest.fileName,
+        size: manifest.fileSize,
+        topicId,
+        manifest,
+        date: msg.date,
+        mimeType: chunkInfo.mimeType,
+        chunkFileName: chunkInfo.fileName,
+        message: chunkMsg,
+      });
     }
   } catch (err) {
     console.error("Failed to list files in topic:", err);
@@ -654,7 +1067,13 @@ export async function deleteDriveFile(
       channelId: bigInt(config.chatId),
       accessHash: bigInt(config.accessHash),
     });
-    const ids = Array.from(new Set([file.id, ...file.manifest.chunks]));
+    const ids = Array.from(
+      new Set([
+        file.id,
+        ...(file.manifest.thumb ? [file.manifest.thumb] : []),
+        ...file.manifest.chunks,
+      ])
+    );
     await client.invoke(
       new Api.channels.DeleteMessages({
         channel: peer,
@@ -697,16 +1116,18 @@ export async function renameDriveFile(
   }
 }
 
+
+
 function getDynamicConcurrency() {
   const cores = navigator.hardwareConcurrency || 4;
 
   if (cores >= 12) {
-    return { segments: 10, workers: 10 };
+    return { segments: 6, workers: 16 };
   }
   if (cores >= 8) {
-    return { segments: 8, workers: 8 };
+    return { segments: 4, workers: 12 };
   }
-  return { segments: 6, workers: 6 };
+  return { segments: 3, workers: 8 };
 }
 
 /**
@@ -720,7 +1141,7 @@ export async function downloadFile(
   onProgress?: (downloaded: number, total: number) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const { segments } = getDynamicConcurrency();
+  const { segments, workers } = getDynamicConcurrency();
   let streamsaver: typeof import("streamsaver") | null = null;
   try {
     streamsaver = await import("streamsaver");
@@ -758,6 +1179,27 @@ export async function downloadFile(
     });
     const messageMap = await getManifestMessageMap(client, peer, manifest.chunks);
 
+    // Warm connection to the target DC before starting parallel downloads
+    if (manifest.chunks.length > 0) {
+      const firstMsgId = manifest.chunks[0];
+      const firstMsg = messageMap.get(firstMsgId);
+      if (firstMsg?.media) {
+        let targetDcId: number | undefined;
+        if (firstMsg.media.className === "MessageMediaDocument" && (firstMsg.media as Api.MessageMediaDocument).document) {
+          targetDcId = ((firstMsg.media as Api.MessageMediaDocument).document as Api.Document).dcId;
+        } else if (firstMsg.media.className === "MessageMediaPhoto" && (firstMsg.media as Api.MessageMediaPhoto).photo) {
+          targetDcId = ((firstMsg.media as Api.MessageMediaPhoto).photo as Api.Photo).dcId;
+        }
+        if (targetDcId) {
+          try {
+            await client.getSender(targetDcId);
+          } catch (err) {
+            console.warn(`Failed to pre-warm sender for DC ${targetDcId}:`, err);
+          }
+        }
+      }
+    }
+
     if (streamsaver) {
       // Streaming download — avoids V8 heap pressure on huge files
       const fileStream = streamsaver.createWriteStream(manifest.fileName, {
@@ -791,8 +1233,9 @@ export async function downloadFile(
             throw new DOMException("Download aborted", "AbortError");
           }
           try {
-            const buffer = await downloadMediaWithWorkers(client, message, {
-              workers: 16,
+            const activeClient = await getHelperClient(index % 3);
+            const buffer = await downloadMediaWithWorkers(activeClient, message, {
+              workers: workers,
               progressCallback: (dl) => {
                 chunkProgress[index] = Number(dl);
               },
@@ -864,8 +1307,9 @@ export async function downloadFile(
             throw new DOMException("Download aborted", "AbortError");
           }
           try {
-            const buffer = await downloadMediaWithWorkers(client, message, {
-              workers: 16,
+            const activeClient = await getHelperClient(index % 3);
+            const buffer = await downloadMediaWithWorkers(activeClient, message, {
+              workers: workers,
               progressCallback: (dl) => {
                 chunkProgress[index] = Number(dl);
               },
@@ -1030,4 +1474,45 @@ export async function downloadFileToMemory(
     clearInterval(progressInterval);
     emitProgress(); // final emit
   }
+}
+
+function extractID3Cover(buffer: Uint8Array): Uint8Array | null {
+  // Check ID3 header (starts with "ID3")
+  if (buffer[0] !== 0x49 || buffer[1] !== 0x44 || buffer[2] !== 0x33) {
+    return null;
+  }
+
+  let offset = 10; // Skip ID3v2 header
+  const limit = buffer.length;
+
+  while (offset + 10 < limit) {
+    // Read Frame ID (4 bytes)
+    const frameId = String.fromCharCode(buffer[offset], buffer[offset + 1], buffer[offset + 2], buffer[offset + 3]);
+    // Read Frame Size (4 bytes, 32-bit big endian)
+    const frameSize = (buffer[offset + 4] << 24) | (buffer[offset + 5] << 16) | (buffer[offset + 6] << 8) | buffer[offset + 7];
+    
+    if (frameSize <= 0 || offset + 10 + frameSize > limit) break;
+
+    if (frameId === "APIC") {
+      const frameDataOffset = offset + 10;
+      let p = frameDataOffset + 1; // Skip encoding byte
+      
+      // Skip MIME type string
+      while (p < limit && buffer[p] !== 0) p++;
+      p++; // Skip null terminator
+      
+      p++; // Skip picture type byte
+      
+      // Skip description string
+      while (p < limit && buffer[p] !== 0) p++;
+      p++; // Skip null terminator
+      
+      const picSize = frameSize - (p - frameDataOffset);
+      if (picSize > 0 && p + picSize <= limit) {
+        return buffer.slice(p, p + picSize);
+      }
+    }
+    
+}
+  return null;
 }

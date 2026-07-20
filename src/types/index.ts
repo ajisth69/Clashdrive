@@ -17,6 +17,7 @@ export interface ChunkManifest {
   fileName: string;
   fileSize: number;
   chunks: number[];
+  thumb?: number;
 }
 
 export interface DriveFile {
@@ -29,6 +30,8 @@ export interface DriveFile {
   mimeType?: string;
   chunkFileName?: string;
   uploaderName?: string;
+  message?: any;
+
 }
 
 export interface UploadProgress {
@@ -59,6 +62,10 @@ export interface UserProfile {
   lastName: string;
   username: string;
   avatarUrl: string | null;
+  phone?: string;
+  isPremium?: boolean;
+  isVerified?: boolean;
+  photoUrl?: string | null;
 }
 
 export interface SavedAccount {

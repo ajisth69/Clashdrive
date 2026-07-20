@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { formatBytes } from "../../lib/manifest";
 import type { DriveFile } from "../../types";
 
@@ -8,6 +9,16 @@ interface StatsWidgetProps {
 }
 
 export function StatsWidget({ files, indexing, indexingProgress }: StatsWidgetProps) {
+  const [collapsed, setCollapsed] = useState(() => {
+    return localStorage.getItem("tgcd_stats_collapsed") === "true";
+  });
+
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    localStorage.setItem("tgcd_stats_collapsed", String(next));
+  };
+
   const totalFiles = files.length;
   const totalSize = files.reduce((acc, f) => acc + f.size, 0);
 
@@ -37,72 +48,106 @@ export function StatsWidget({ files, indexing, indexingProgress }: StatsWidgetPr
     return (size / totalSize) * 100;
   };
 
+  if (collapsed) {
+    return (
+      <div 
+        onClick={toggleCollapsed}
+        className="px-4 py-3 bg-md-surface-container rounded-2xl border border-md-outline-variant/20 select-none cursor-pointer hover:bg-md-surface-container-high transition-all duration-200 flex items-center justify-between"
+      >
+        <div className="flex flex-col min-w-0">
+          <span className="text-[9px] font-medium text-md-on-surface-variant uppercase tracking-wider">Storage</span>
+          <span className="text-sm font-bold text-md-on-surface tracking-tight">{formatBytes(totalSize)}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {indexing ? (
+            <span className="text-[9px] text-md-tertiary animate-pulse font-medium">
+              Indexing...
+            </span>
+          ) : (
+            <span className="text-[10px] text-md-on-surface-variant font-medium font-mono bg-md-surface-container-high px-1.5 py-0.5 rounded">{totalFiles} files</span>
+          )}
+          <svg className="w-3.5 h-3.5 text-md-on-surface-variant transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-4.5 px-4 py-4.5 bg-surface-200/50 dark:bg-surface-200/10 rounded-3xl border border-surface-300/40 dark:border-surface-300/10 select-none">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-bold text-surface-800 tracking-tight">Storage Usage</span>
-        {indexing ? (
-          <span className="text-[10px] text-accent-450 dark:text-accent-400 animate-pulse flex items-center gap-1 font-bold">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-400 animate-ping shrink-0" />
-            Indexing ({indexingProgress.current}/{indexingProgress.total})
-          </span>
-        ) : (
-          <span className="text-[10px] text-surface-500 font-bold font-mono">{totalFiles} files</span>
-        )}
+    <div className="space-y-4 px-4 py-4 bg-md-surface-container rounded-[20px] border border-md-outline-variant/20 select-none">
+      <div 
+        onClick={toggleCollapsed}
+        className="flex items-center justify-between cursor-pointer group"
+      >
+        <span className="text-xs font-semibold text-md-on-surface tracking-tight group-hover:text-md-primary transition-colors">Storage Usage</span>
+        <div className="flex items-center gap-1.5">
+          {indexing ? (
+            <span className="text-[10px] text-md-tertiary animate-pulse flex items-center gap-1 font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-md-tertiary animate-ping shrink-0" />
+              Indexing ({indexingProgress.current}/{indexingProgress.total})
+            </span>
+          ) : (
+            <span className="text-[10px] text-md-on-surface-variant font-medium font-mono">{totalFiles} files</span>
+          )}
+          <svg className="w-3.5 h-3.5 text-md-on-surface-variant transform rotate-180 transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
       </div>
 
       <div className="space-y-1">
-        <div className="text-xl font-black text-surface-900 tracking-tight leading-none">
+        <div className="text-lg font-bold text-md-on-surface tracking-tight leading-none">
           {formatBytes(totalSize)}
         </div>
-        <div className="text-[10px] text-surface-500 font-bold uppercase tracking-wider">Telegram Cloud Vault</div>
+        <div className="text-[9px] text-md-on-surface-variant font-medium uppercase tracking-wider">Telegram Cloud Vault</div>
       </div>
 
-      {/* Storage Segment Bar */}
-      <div className="h-2.5 w-full rounded-full bg-surface-250 dark:bg-surface-300/25 flex overflow-hidden shadow-inner border border-surface-300/10 dark:border-surface-300/5">
+      {/* Storage Segment Bar — M3 tonal colors */}
+      <div className="h-2 w-full rounded-full bg-md-surface-container-highest flex overflow-hidden">
         <div
           style={{ width: `${getPercent(imagesSize)}%` }}
-          className="bg-brand-500 transition-all duration-500 shadow-sm shadow-brand-500/20"
+          className="bg-md-primary transition-all duration-500"
           title={`Images: ${formatBytes(imagesSize)}`}
         />
         <div
           style={{ width: `${getPercent(videosSize)}%` }}
-          className="bg-accent-500 transition-all duration-500 shadow-sm shadow-accent-500/20"
+          className="bg-md-tertiary transition-all duration-500"
           title={`Videos: ${formatBytes(videosSize)}`}
         />
         <div
           style={{ width: `${getPercent(audioSize)}%` }}
-          className="bg-success transition-all duration-500 shadow-sm shadow-success/20"
+          className="bg-success transition-all duration-500"
           title={`Audio: ${formatBytes(audioSize)}`}
         />
         <div
           style={{ width: `${getPercent(docsSize)}%` }}
-          className="bg-warning transition-all duration-500 shadow-sm shadow-warning/20"
+          className="bg-warning transition-all duration-500"
           title={`Documents: ${formatBytes(docsSize)}`}
         />
         <div
           style={{ width: `${getPercent(otherSize)}%` }}
-          className="bg-surface-500 dark:bg-surface-450 transition-all duration-500 shadow-sm"
+          className="bg-md-outline transition-all duration-500"
           title={`Other: ${formatBytes(otherSize)}`}
         />
       </div>
 
       {/* Legend Grid */}
-      <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-[10px] text-surface-600 font-bold select-none pt-1 border-t border-surface-300/10 dark:border-surface-300/5">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="w-2 h-2 rounded-full bg-brand-500 block shrink-0 shadow-sm shadow-brand-500/10" />
+      <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 text-[9px] text-md-on-surface-variant font-medium select-none pt-1 border-t border-md-outline-variant/15">
+        <div className="flex items-center gap-1 min-w-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-md-primary block shrink-0" />
           <span className="truncate">Images ({formatBytes(imagesSize)})</span>
         </div>
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="w-2 h-2 rounded-full bg-accent-500 block shrink-0 shadow-sm shadow-accent-500/10" />
+        <div className="flex items-center gap-1 min-w-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-md-tertiary block shrink-0" />
           <span className="truncate">Videos ({formatBytes(videosSize)})</span>
         </div>
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="w-2 h-2 rounded-full bg-success block shrink-0 shadow-sm shadow-success/10" />
+        <div className="flex items-center gap-1 min-w-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-success block shrink-0" />
           <span className="truncate">Audio ({formatBytes(audioSize)})</span>
         </div>
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="w-2 h-2 rounded-full bg-warning block shrink-0 shadow-sm shadow-warning/10" />
+        <div className="flex items-center gap-1 min-w-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-warning block shrink-0" />
           <span className="truncate">Docs ({formatBytes(docsSize)})</span>
         </div>
       </div>

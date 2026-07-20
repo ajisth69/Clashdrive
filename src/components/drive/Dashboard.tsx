@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import type { TelegramClient } from "telegram";
 import type { DriveConfig, TopicFolder, DriveFile, UploadProgress, DownloadProgress, SavedAccount, UserProfile } from "../../types";
 import type { Theme } from "../../hooks/useTheme";
 import { Header } from "../layout/Header";
@@ -11,8 +12,13 @@ import { CreateFolderModal } from "./CreateFolderModal";
 import { ProgressBar } from "../ui/ProgressBar";
 import { formatBytes } from "../../lib/manifest";
 import { FileIcon } from "./FileIcon";
+import { FileCardThumbnail } from "./FileCardThumbnail";
+import { MoveCopyModal } from "./MoveCopyModal";
+import { FileInfoModal } from "./FileInfoModal";
+import { SettingsModal } from "./SettingsModal";
 
 interface DashboardProps {
+  client?: TelegramClient | null;
   driveConfig: DriveConfig;
   topics: TopicFolder[];
   files: DriveFile[];
@@ -31,6 +37,8 @@ interface DashboardProps {
   onCancelDownload?: () => void;
   onRenameFile: (file: DriveFile) => void;
   onDeleteFile: (file: DriveFile) => void;
+  onMoveFile?: (files: DriveFile[], targetFolderId: number) => Promise<boolean>;
+  onCopyFile?: (files: DriveFile[], targetFolderId: number) => Promise<boolean>;
   onLogout: () => void;
   userProfile: UserProfile | null;
   accounts: SavedAccount[];
@@ -51,11 +59,64 @@ interface DashboardProps {
   setTheme: (theme: Theme) => void;
   onJoinUpdateChannel?: () => void | Promise<void>;
   joiningChannel?: boolean;
+  onClearCache?: () => void | Promise<void>;
   triggerConfirm?: (title: string, message: string, onConfirm: () => void | Promise<void>) => void;
   triggerToast?: (message: string, type?: "success" | "error" | "info") => void;
+  favouriteChunks?: Set<string>;
+  onToggleLike?: (file: DriveFile) => void;
+  onShare?: (file: DriveFile) => void;
+  fileSharingEnabled?: boolean;
+  onToggleFileSharing?: () => void;
+  onOpenReceiveShare?: (hash?: string) => void;
+}
+
+function getFolderIcon(title: string, color: string, baseClass = "w-5 h-5 shrink-0") {
+  const t = title.toLowerCase();
+  
+  if (t.includes("favour") || t.includes("favor")) {
+    return (
+      <svg className={baseClass} fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.907c.969 0 1.371 1.24.588 1.81l-3.97 2.883a1 1 0 00-.364 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.971-2.883a1 1 0 00-1.175 0l-3.97 2.883c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.364-1.118L2.98 10.1c-.783-.57-.38-1.81.588-1.81h4.906a1 1 0 00.951-.69l1.519-4.674z" />
+      </svg>
+    );
+  }
+  if (t.includes("video") || t.includes("movie") || t.includes("film")) {
+    return (
+      <svg className={baseClass} fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+      </svg>
+    );
+  }
+  if (t.includes("audio") || t.includes("music") || t.includes("sound") || t.includes("song")) {
+    return (
+      <svg className={baseClass} fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+      </svg>
+    );
+  }
+  if (t.includes("photo") || t.includes("image") || t.includes("pic") || t.includes("gallery")) {
+    return (
+      <svg className={baseClass} fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+      </svg>
+    );
+  }
+  if (t.includes("doc") || t.includes("text") || t.includes("pdf") || t.includes("file") || t.includes("sheet")) {
+    return (
+      <svg className={baseClass} fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+    );
+  }
+  return (
+    <svg className={baseClass} fill="none" viewBox="0 0 24 24" stroke={color} strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  );
 }
 
 export function Dashboard({
+  client,
   driveConfig,
   topics,
   files,
@@ -74,6 +135,8 @@ export function Dashboard({
   onCancelDownload,
   onRenameFile,
   onDeleteFile,
+  onMoveFile,
+  onCopyFile,
   onLogout,
   userProfile,
   accounts,
@@ -94,14 +157,86 @@ export function Dashboard({
   setTheme,
   onJoinUpdateChannel,
   joiningChannel = false,
+  onClearCache,
   triggerConfirm,
   triggerToast,
+  favouriteChunks = new Set(),
+  onToggleLike,
+  onShare,
+  fileSharingEnabled,
+  onToggleFileSharing,
+  onOpenReceiveShare,
 }: DashboardProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showCreateFolder, setShowCreateFolder] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [moveCopyTarget, setMoveCopyTarget] = useState<{ open: boolean; files: DriveFile[] } | null>(null);
+  const [infoModalFile, setInfoModalFile] = useState<DriveFile | null>(null);
+  const [recentContextMenu, setRecentContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    file: DriveFile | null;
+  }>({ visible: false, x: 0, y: 0, file: null });
+
+  const handleRecentContextMenu = (e: React.MouseEvent, file: DriveFile) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 190;
+    const menuHeight = 320;
+    const padding = 16;
+
+    let x = e.clientX;
+    let y = e.clientY;
+
+    if (x + menuWidth > window.innerWidth - padding) {
+      x = window.innerWidth - menuWidth - padding;
+    }
+    if (y + menuHeight > window.innerHeight - padding) {
+      y = window.innerHeight - menuHeight - padding;
+    }
+
+    setRecentContextMenu({
+      visible: true,
+      x: Math.max(padding, x),
+      y: Math.max(padding, y),
+      file,
+    });
+  };
+
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setRecentContextMenu((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+    };
+    window.addEventListener("click", handleGlobalClick);
+    return () => window.removeEventListener("click", handleGlobalClick);
+  }, []);
+
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"name" | "size" | "date">("date");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [gridBoxSize, setGridBoxSize] = useState<"small" | "medium" | "large">(() => {
+    return (localStorage.getItem("tgcd_grid_box_size") as "small" | "medium" | "large") || "large";
+  });
+
+  const handleSetGridBoxSize = (size: "small" | "medium" | "large") => {
+    setGridBoxSize(size);
+    localStorage.setItem("tgcd_grid_box_size", size);
+  };
+
+  const [showSortDropdown, setShowSortDropdown] = useState(false);
+  const sortDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (sortDropdownRef.current && !sortDropdownRef.current.contains(event.target as Node)) {
+        setShowSortDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const [selectionState, setSelectionState] = useState<{
     folderId: number | null;
     ids: Set<number>;
@@ -274,7 +409,7 @@ export function Dashboard({
   }, [onFileDrop]);
 
   return (
-    <div className="min-h-screen bg-surface-50 dark:bg-surface-50 flex flex-col relative transition-colors duration-300">
+    <div className="h-screen max-h-screen overflow-hidden bg-surface-50 dark:bg-surface-50 flex flex-col relative transition-colors duration-300">
       {/* Full-screen drag wash overlay */}
       {isDraggingPage && (
         <div 
@@ -305,6 +440,13 @@ export function Dashboard({
         theme={theme}
         setTheme={setTheme}
         onMenuClick={() => setShowMobileSidebar(true)}
+        onOpenReceiveShare={onOpenReceiveShare}
+        fileSharingEnabled={fileSharingEnabled}
+        onToggleFileSharing={onToggleFileSharing}
+        onJoinUpdateChannel={onJoinUpdateChannel}
+        joiningChannel={joiningChannel}
+        onClearCache={onClearCache}
+        onOpenSettingsModal={() => setShowSettingsModal(true)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -319,6 +461,7 @@ export function Dashboard({
           indexingProgress={indexingProgress}
           onJoinUpdateChannel={onJoinUpdateChannel}
           joiningChannel={joiningChannel}
+          onOpenReceiveShare={onOpenReceiveShare}
         />
 
         <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8">
@@ -331,48 +474,81 @@ export function Dashboard({
             /* Root view: show folders */
             <div className="space-y-8">
               {/* Recent Files Panel */}
+              {/* Recent Uploads Section */}
               {!searchQuery && recentFiles.length > 0 && (
-                <div className="space-y-4">
-                  <h2 className="text-sm font-extrabold uppercase tracking-widest text-surface-600 flex items-center gap-2 select-none">
-                    <span>Recent Uploads</span>
-                    <span className="text-[9px] uppercase bg-brand-500/10 text-brand-450 dark:text-brand-400 font-extrabold px-2 py-0.5 rounded-full border border-brand-500/15 animate-pulse select-none">
-                      Activity
-                    </span>
-                  </h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {recentFiles.map((file) => (
-                      <div
-                        key={file.id}
-                        onClick={() => onPreview(file)}
-                        className="glass glass-hover p-4.5 rounded-3xl flex items-center gap-4 border border-surface-300/40 dark:border-surface-300/10 shadow-sm cursor-pointer relative group animate-slide-up"
-                      >
-                        <div className="w-11 h-11 rounded-2xl bg-surface-200/55 dark:bg-surface-300/5 flex items-center justify-center shrink-0 shadow-inner border border-surface-300/10">
-                          <FileIcon fileName={file.name} className="w-5.5 h-5.5 filter drop-shadow-sm" />
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-xs font-semibold uppercase tracking-widest text-md-on-surface-variant flex items-center gap-2 select-none">
+                      <span>Recent Uploads</span>
+                      <span className="text-[9px] uppercase bg-md-primary-container text-md-on-primary-container font-semibold px-2 py-0.5 rounded-full select-none">
+                        Activity
+                      </span>
+                    </h2>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                    {recentFiles.map((file) => {
+                      const ext = file.name.split(".").pop()?.toUpperCase() || "FILE";
+                      return (
+                        <div
+                          key={file.id}
+                          onClick={() => onPreview(file)}
+                          onContextMenu={(e) => handleRecentContextMenu(e, file)}
+                          className="group relative flex flex-col bg-md-surface-container-lowest rounded-[20px] overflow-hidden border border-md-outline-variant/30 hover:border-md-primary/30 transition-all duration-300 cursor-pointer select-none"
+                          style={{ boxShadow: 'var(--md-elevation-1)' }}
+                        >
+                          {/* Thumbnail Box Container */}
+                          <div className="relative aspect-[16/10] w-full bg-md-surface-container overflow-hidden flex items-center justify-center p-2">
+                            <FileCardThumbnail
+                              file={file}
+                              client={client}
+                              driveConfig={driveConfig}
+                              className="w-full h-full object-cover rounded-xl transition-transform duration-300 group-hover:scale-105"
+                            />
+
+                            {/* Format Badge Overlay */}
+                            <span className="absolute top-2 right-2 text-[8px] font-semibold font-mono bg-md-inverse-surface/70 backdrop-blur-md text-md-inverse-on-surface px-1.5 py-0.5 rounded-md border border-white/5 shadow-sm">
+                              {ext}
+                            </span>
+
+                            {/* Hover Preview Overlay Icon */}
+                            <div className="absolute inset-0 bg-md-primary-container/20 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <div className="w-8 h-8 rounded-full bg-md-surface-container-highest text-md-primary flex items-center justify-center shadow-md transform scale-75 group-hover:scale-100 transition-transform">
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Box Footer Info */}
+                          <div className="p-3 bg-md-surface-container-lowest border-t border-md-outline-variant/20 flex flex-col gap-0.5 min-w-0">
+                            <p className="text-xs font-semibold text-md-on-surface truncate group-hover:text-md-primary transition-colors leading-tight" title={file.name}>
+                              {file.name}
+                            </p>
+                            <div className="flex items-center justify-between text-[10px] text-md-on-surface-variant font-medium font-mono mt-0.5">
+                              <span>{formatBytes(file.size)}</span>
+                              <span>{new Date(file.date * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                            </div>
+                          </div>
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold text-surface-900 truncate group-hover:text-brand-500 transition-colors">
-                            {file.name}
-                          </p>
-                          <p className="text-[10px] text-surface-500 mt-1 font-bold">
-                            {formatBytes(file.size)} • {new Date(file.date * 1000).toLocaleDateString()}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
               <div className="flex items-center justify-between">
-                <h2 className="text-sm font-extrabold uppercase tracking-widest text-surface-600">
+                <h2 className="text-sm font-semibold uppercase tracking-widest text-md-on-surface-variant">
                   {searchQuery ? "Matching Folders" : "Folders"}
-                  <span className="text-[10px] font-bold text-surface-500 ml-2 bg-surface-200/60 dark:bg-surface-300/15 px-2 py-0.5 rounded-full font-mono border border-surface-300/10">
+                  <span className="text-[10px] font-semibold text-md-on-surface-variant ml-2 bg-md-surface-container-high px-2 py-0.5 rounded-full font-mono border border-md-outline-variant/20">
                     {displayedTopics.length}
                   </span>
                 </h2>
                 <button
                   onClick={() => setShowCreateFolder(true)}
-                  className="lg:hidden flex items-center gap-1.5 text-xs text-brand-450 hover:text-brand-600 transition-colors font-bold uppercase tracking-wider cursor-pointer"
+                  className="lg:hidden flex items-center gap-1.5 text-xs text-md-primary hover:underline transition-colors font-semibold uppercase tracking-wider cursor-pointer"
                 >
                   <svg
                     className="w-4 h-4"
@@ -392,24 +568,96 @@ export function Dashboard({
               </div>
 
               {displayedTopics.length > 0 ? (
-                <TopicList
-                  folders={displayedTopics}
-                  onFolderClick={onFolderClick}
-                  onRenameFolder={onRenameFolder}
-                  onDeleteFolder={onDeleteFolder}
-                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {displayedTopics.map((folder, idx) => {
+                    const getFolderTheme = (title: string, index: number) => {
+                      const t = title.toLowerCase();
+                      if (t.includes("favour") || t.includes("favor")) {
+                        return { text: "var(--color-warning)", bg: "bg-warning-container/30", border: "hover:border-warning/40" };
+                      }
+                      if (t.includes("video") || t.includes("movie")) {
+                        return { text: "var(--md-tertiary)", bg: "bg-md-tertiary-container/30", border: "hover:border-md-tertiary/40" };
+                      }
+                      if (t.includes("audio") || t.includes("music")) {
+                        return { text: "var(--md-tertiary)", bg: "bg-md-tertiary-container/30", border: "hover:border-md-tertiary/40" };
+                      }
+                      if (t.includes("photo") || t.includes("image") || t.includes("pic")) {
+                        return { text: "var(--color-success)", bg: "bg-success-container/30", border: "hover:border-success/40" };
+                      }
+                      if (t.includes("doc") || t.includes("text") || t.includes("pdf") || t.includes("file")) {
+                        return { text: "var(--md-primary)", bg: "bg-md-primary-container/30", border: "hover:border-md-primary/40" };
+                      }
+                      
+                      const fallbackColors = [
+                        { text: "var(--md-primary)", bg: "bg-md-primary-container/30", border: "hover:border-md-primary/40" },
+                        { text: "var(--color-warning)", bg: "bg-warning-container/30", border: "hover:border-warning/40" },
+                        { text: "var(--md-tertiary)", bg: "bg-md-tertiary-container/30", border: "hover:border-md-tertiary/40" },
+                      ];
+                      return fallbackColors[index % fallbackColors.length];
+                    };
+                    const theme = getFolderTheme(folder.title, idx);
+                    const fileCount = allFiles.filter((f) => f.topicId === folder.id).length;
+
+                    return (
+                      <div
+                        key={folder.id}
+                        onClick={() => onFolderClick(folder.id)}
+                        className={`group relative bg-md-surface-container-lowest border border-md-outline-variant/30 ${theme.border} rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:-translate-y-0.5 transition-all duration-200 select-none`}
+                        style={{ boxShadow: 'var(--md-elevation-1)' }}
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <div className={`w-10 h-10 rounded-full ${theme.bg} flex items-center justify-center shrink-0`}>
+                            {getFolderIcon(folder.title, theme.text)}
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-semibold text-md-on-surface truncate tracking-tight group-hover:text-md-primary transition-colors">
+                              {folder.title}
+                            </h4>
+                            <p className="text-[10px] text-md-on-surface-variant font-medium mt-0.5">
+                              {fileCount} {fileCount === 1 ? "file" : "files"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div
+                          className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 ml-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => onRenameFolder(folder)}
+                            className="p-1.5 rounded-md hover:bg-md-surface-container-high text-md-on-surface-variant hover:text-md-primary active:scale-90 transition-all cursor-pointer"
+                            title="Rename Folder"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => onDeleteFolder(folder.id)}
+                            className="p-1.5 rounded-md hover:bg-md-error-container/30 text-md-on-surface-variant hover:text-md-error active:scale-90 transition-all cursor-pointer"
+                            title="Delete Folder"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 searchQuery && (
-                  <p className="text-xs text-surface-550 italic select-none">No folders matching "{searchQuery}"</p>
+                  <p className="text-xs text-md-on-surface-variant italic select-none">No folders matching "{searchQuery}"</p>
                 )
               )}
 
               {/* Search Results: Files */}
               {searchQuery && (
-                <div className="space-y-4 pt-6 border-t border-surface-300/40 dark:border-surface-300/10">
-                  <h2 className="text-sm font-extrabold uppercase tracking-widest text-surface-600 flex items-center gap-2">
+                <div className="space-y-4 pt-6 border-t border-md-outline-variant/20">
+                  <h2 className="text-sm font-semibold uppercase tracking-widest text-md-on-surface-variant flex items-center gap-2">
                     <span>Search Results: Files</span>
-                    <span className="text-[10px] font-bold text-surface-500 bg-surface-200/60 dark:bg-surface-300/15 px-2 py-0.5 rounded-full font-mono border border-surface-300/10">
+                    <span className="text-[10px] font-semibold text-md-on-surface-variant bg-md-surface-container-high px-2 py-0.5 rounded-full font-mono border border-md-outline-variant/20">
                       {matchingFiles.length}
                     </span>
                   </h2>
@@ -423,19 +671,25 @@ export function Dashboard({
                     selectedFileIds={selectedFileIds}
                     onToggleSelect={handleToggleSelect}
                     onToggleSelectAll={handleToggleSelectAll}
+                    favouriteChunks={favouriteChunks}
+                    onToggleLike={onToggleLike}
+                    onShare={onShare}
+                    onOpenMoveCopy={(filesToMove) => setMoveCopyTarget({ open: true, files: filesToMove })}
+                    onOpenDetails={(file) => setInfoModalFile(file)}
+                    gridBoxSize={gridBoxSize}
                   />
                 </div>
               )}
 
               {searchQuery && displayedTopics.length === 0 && matchingFiles.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-20 animate-fade-in text-center select-none">
-                  <div className="w-16 h-16 mb-4 rounded-2xl bg-surface-200/40 dark:bg-surface-200/10 flex items-center justify-center text-surface-500 border border-surface-300/30 dark:border-surface-300/5">
-                    <svg className="w-8 h-8 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <div className="w-16 h-16 mb-4 rounded-2xl bg-md-surface-container flex items-center justify-center text-md-on-surface-variant border border-md-outline-variant/20">
+                    <svg className="w-8 h-8 text-md-outline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                     </svg>
                   </div>
-                  <p className="text-surface-900 font-bold mb-1 text-sm">No results found</p>
-                  <p className="text-surface-550 text-xs max-w-[260px] leading-relaxed">
+                  <p className="text-md-on-surface font-semibold mb-1 text-sm">No results found</p>
+                  <p className="text-md-on-surface-variant text-xs max-w-[260px] leading-relaxed">
                     We couldn't find any folders or files matching "{searchQuery}"
                   </p>
                 </div>
@@ -446,6 +700,7 @@ export function Dashboard({
             <div className="space-y-8">
               <UploadZone
                 onDrop={onFileDrop}
+                onImportShareHash={(hash) => onOpenReceiveShare?.(hash)}
               />
 
               {/* Upload progress indicators */}
@@ -578,21 +833,42 @@ export function Dashboard({
                   </div>
 
                   {/* Sorting options */}
-                  <div className="flex items-center gap-2 shrink-0 select-none">
+                  <div className="relative flex items-center gap-2 shrink-0 select-none" ref={sortDropdownRef}>
                     <span className="text-xs text-surface-500 font-bold uppercase tracking-wider">Sort:</span>
-                    <select
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value as "name" | "size" | "date")}
-                      className="bg-surface-200 dark:bg-surface-200/10 text-surface-900 text-xs rounded-xl px-3 py-2 border border-surface-300/30 dark:border-surface-300/10 outline-none cursor-pointer focus:border-brand-400 font-bold tracking-tight"
+                    <button
+                      onClick={() => setShowSortDropdown(!showSortDropdown)}
+                      className="bg-surface-200 dark:bg-surface-200/10 hover:bg-surface-300 dark:hover:bg-surface-300/15 text-surface-900 text-xs rounded-xl px-3 py-2 border border-surface-300/30 dark:border-surface-300/10 outline-none cursor-pointer focus:border-brand-400 font-bold tracking-tight flex items-center gap-1.5 min-w-[72px] justify-between transition-all"
                     >
-                      <option value="date">Date</option>
-                      <option value="name">Name</option>
-                      <option value="size">Size</option>
-                    </select>
+                      <span className="capitalize">{sortBy}</span>
+                      <svg className={`w-3 h-3 text-surface-500 transition-transform duration-200 ${showSortDropdown ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+
+                    {showSortDropdown && (
+                      <div className="absolute right-9 top-full mt-1.5 z-45 bg-surface-100 dark:bg-surface-200 border border-surface-300/40 dark:border-surface-300/15 rounded-2xl shadow-xl py-1.5 min-w-[100px] overflow-hidden animate-slide-down">
+                        {(["date", "name", "size"] as const).map((opt) => (
+                          <button
+                            key={opt}
+                            onClick={() => {
+                              setSortBy(opt);
+                              setShowSortDropdown(false);
+                            }}
+                            className={`w-full text-left px-4 py-2 text-xs font-semibold capitalize transition-colors ${
+                              sortBy === opt
+                                ? "bg-brand-500 text-white"
+                                : "text-surface-750 dark:text-surface-700 hover:bg-surface-200 dark:hover:bg-surface-300/20"
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    )}
 
                     <button
                       onClick={() => setSortOrder(prev => prev === "asc" ? "desc" : "asc")}
-                      className="p-2 rounded-xl bg-surface-200 dark:bg-surface-200/10 hover:bg-surface-300 dark:hover:bg-surface-300/10 text-surface-700 dark:text-surface-650 transition-colors cursor-pointer border border-transparent hover:border-surface-300/30 active:scale-90"
+                      className="p-2 rounded-xl bg-surface-200 dark:bg-surface-200/10 hover:bg-surface-300 dark:hover:bg-surface-300/10 text-surface-700 dark:text-surface-650 transition-colors cursor-pointer border border-transparent hover:border-surface-300/30 active:scale-90 mr-2"
                       title={sortOrder === "asc" ? "Sort Ascending" : "Sort Descending"}
                     >
                       {sortOrder === "asc" ? (
@@ -602,6 +878,30 @@ export function Dashboard({
                       ) : (
                         <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M3 4h13M3 8h9M3 12h9m0 0l-3-3m3 3l-3 3" />
+                        </svg>
+                      )}
+                    </button>
+
+                    {/* Grid Sizing layout icon button */}
+                    <button
+                      onClick={() => {
+                        const nextSize = gridBoxSize === "large" ? "small" : gridBoxSize === "small" ? "medium" : "large";
+                        handleSetGridBoxSize(nextSize);
+                      }}
+                      className="p-2 rounded-xl bg-surface-200 dark:bg-surface-200/10 hover:bg-surface-300 dark:hover:bg-surface-300/10 text-surface-700 dark:text-surface-650 transition-all cursor-pointer border border-transparent hover:border-surface-300/30 active:scale-90"
+                      title={`Grid Layout: ${gridBoxSize === "large" ? "Big" : gridBoxSize}`}
+                    >
+                      {gridBoxSize === "small" ? (
+                        <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4h4v4H4V4zm6 0h4v4h-4V4zm6 0h4v4h-4V4zM4 10h4v4H4v-4zm6 0h4v4h-4v-4zm6 0h4v4h-4v-4zM4 16h4v4H4v-4zm6 0h4v4h-4v-4zm6 0h4v4h-4v-4z" />
+                        </svg>
+                      ) : gridBoxSize === "medium" ? (
+                        <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 0h6v6h-6v-6z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
                         </svg>
                       )}
                     </button>
@@ -616,6 +916,8 @@ export function Dashboard({
                     </span>
                   </h2>
                   <FileGrid
+                    client={client}
+                    driveConfig={driveConfig}
                     files={displayedFiles}
                     loading={loadingFiles}
                     onDownload={onDownload}
@@ -625,6 +927,12 @@ export function Dashboard({
                     selectedFileIds={selectedFileIds}
                     onToggleSelect={handleToggleSelect}
                     onToggleSelectAll={handleToggleSelectAll}
+                    favouriteChunks={favouriteChunks}
+                    onToggleLike={onToggleLike}
+                    onShare={onShare}
+                    onOpenMoveCopy={(filesToMove) => setMoveCopyTarget({ open: true, files: filesToMove })}
+                    onOpenDetails={(file) => setInfoModalFile(file)}
+                    gridBoxSize={gridBoxSize}
                   />
                 </div>
               </div>
@@ -645,6 +953,18 @@ export function Dashboard({
           </div>
           <div className="h-5 w-[1px] bg-surface-300/40 dark:bg-surface-300/10" />
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const selectedFiles = displayedFiles.filter((f) => selectedFileIds.has(f.id));
+                if (selectedFiles.length > 0) setMoveCopyTarget({ open: true, files: selectedFiles });
+              }}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-brand-500/10 hover:bg-brand-500/20 text-brand-500 text-xs font-bold border border-brand-500/20 active:scale-95 transition-all cursor-pointer select-none"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
+              Move / Copy
+            </button>
             <button
               onClick={handleBatchDownload}
               className="flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold shadow-md shadow-brand-500/10 active:scale-95 transition-all cursor-pointer select-none border border-brand-600/10"
@@ -677,15 +997,171 @@ export function Dashboard({
       <input
         ref={mobileFileInputRef}
         type="file"
-        multiple={true}
+        multiple
         className="hidden"
         onChange={(e) => {
-          const selectedFiles = Array.from(e.target.files || []);
-          if (selectedFiles.length > 0) {
-            onFileDrop(selectedFiles);
+          if (e.target.files && e.target.files.length > 0) {
+            onFileDrop(Array.from(e.target.files));
+            e.target.value = "";
           }
-          e.target.value = "";
         }}
+      />
+
+      {/* Move & Copy Modal */}
+      <MoveCopyModal
+        open={Boolean(moveCopyTarget?.open)}
+        onClose={() => setMoveCopyTarget(null)}
+        files={moveCopyTarget?.files || []}
+        folders={topics}
+        onMove={async (targetFolderId) => {
+          if (moveCopyTarget?.files && onMoveFile) {
+            const ok = await onMoveFile(moveCopyTarget.files, targetFolderId);
+            if (ok) setSelectionState({ folderId: activeFolderId, ids: new Set() });
+          }
+        }}
+        onCopy={async (targetFolderId) => {
+          if (moveCopyTarget?.files && onCopyFile) {
+            const ok = await onCopyFile(moveCopyTarget.files, targetFolderId);
+            if (ok) setSelectionState({ folderId: activeFolderId, ids: new Set() });
+          }
+        }}
+      />
+
+      {/* File Info Modal */}
+      <FileInfoModal
+        open={Boolean(infoModalFile)}
+        onClose={() => setInfoModalFile(null)}
+        file={infoModalFile}
+        onDownload={onDownload}
+        onRename={onRenameFile}
+      />
+
+      {/* Recent Uploads Context Menu */}
+      {recentContextMenu.visible && recentContextMenu.file && (
+        <div
+          className="fixed z-[100] bg-md-surface-container backdrop-blur-xl border border-md-outline-variant/30 rounded-[12px] py-2 min-w-[170px] animate-scale-in select-none text-left"
+          style={{
+            top: `${recentContextMenu.y}px`,
+            left: `${recentContextMenu.x}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              if (recentContextMenu.file) onPreview(recentContextMenu.file);
+              setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+            }}
+            className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-on-surface hover:bg-md-surface-container-high flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+          >
+            <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+            Open / View
+          </button>
+          <button
+            onClick={() => {
+              if (recentContextMenu.file) setInfoModalFile(recentContextMenu.file);
+              setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+            }}
+            className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-on-surface hover:bg-md-surface-container-high flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+          >
+            <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Details
+          </button>
+          <button
+            onClick={() => {
+              if (recentContextMenu.file) onDownload(recentContextMenu.file);
+              setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+            }}
+            className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-on-surface hover:bg-md-surface-container-high flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+          >
+            <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Download
+          </button>
+          <button
+            onClick={() => {
+              if (recentContextMenu.file) setMoveCopyTarget({ open: true, files: [recentContextMenu.file] });
+              setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+            }}
+            className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-on-surface hover:bg-md-surface-container-high flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+          >
+            <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            </svg>
+            Move / Copy
+          </button>
+          {onShare && (
+            <button
+              onClick={() => {
+                if (recentContextMenu.file) onShare(recentContextMenu.file);
+                setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+              }}
+              className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-on-surface hover:bg-md-surface-container-high flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+            >
+              <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              </svg>
+              Share File
+            </button>
+          )}
+          <div className="h-[1px] bg-md-outline-variant/30 my-1" />
+          <button
+            onClick={() => {
+              if (recentContextMenu.file) onRenameFile(recentContextMenu.file);
+              setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+            }}
+            className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-on-surface hover:bg-md-surface-container-high flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+          >
+            <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+            </svg>
+            Rename
+          </button>
+          <button
+            onClick={() => {
+              if (recentContextMenu.file) onDeleteFile(recentContextMenu.file);
+              setRecentContextMenu((prev) => ({ ...prev, visible: false }));
+            }}
+            className="w-full text-left px-3.5 py-2.5 text-xs font-medium text-md-error hover:bg-md-error-container/30 flex items-center gap-2 cursor-pointer transition-colors min-h-[40px]"
+          >
+            <svg className="w-4 h-4 text-md-error" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            Delete
+          </button>
+        </div>
+      )}
+
+      {/* Settings & Profile Modal */}
+      <SettingsModal
+        open={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        userProfile={userProfile}
+        accounts={accounts}
+        activeAccountId={activeAccountId}
+        allFiles={allFiles}
+        onAddAccount={onAddAccount}
+        onSwitchAccount={onSwitchAccount}
+        onRemoveAccount={onRemoveAccount}
+        onLogout={onLogout}
+        onClearCache={onClearCache}
+        theme={theme}
+        setTheme={setTheme}
+        fileSharingEnabled={fileSharingEnabled}
+        onToggleFileSharing={onToggleFileSharing}
+        onJoinUpdateChannel={onJoinUpdateChannel}
+        joiningChannel={joiningChannel}
+      />
+
+      <CreateFolderModal
+        open={showCreateFolder}
+        onClose={() => setShowCreateFolder(false)}
+        onSubmit={onCreateFolder}
       />
 
       {/* Mobile Floating Action Button (FAB) - Material 3 spec */}

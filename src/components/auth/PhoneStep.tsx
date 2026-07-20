@@ -33,20 +33,20 @@ export function PhoneStep({ loading, error, onSubmit, onBack }: PhoneStepProps) 
   return (
     <form onSubmit={handleSubmit} className="space-y-6 sm:space-y-8 animate-slide-up">
       <div className="text-center space-y-2">
-        <div className="w-16 h-16 mx-auto rounded-2xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center mb-3 text-brand-400">
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <div className="w-14 h-14 mx-auto rounded-2xl bg-md-primary-container flex items-center justify-center mb-3 text-md-on-primary-container">
+          <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-6 15h9" />
           </svg>
         </div>
-        <h2 className="text-2xl font-extrabold text-surface-900 tracking-tight">Connect Account</h2>
-        <p className="text-surface-600 text-sm">
+        <h2 className="text-2xl font-semibold text-md-on-surface tracking-tight">Connect Account</h2>
+        <p className="text-md-on-surface-variant text-sm">
           Access your cloud drive using your Telegram session
         </p>
       </div>
 
-      {/* Form Error Alert */}
+      {/* Form Error Alert — M3 error-container */}
       {(error || validationError) && (
-        <div className="flex gap-3 bg-danger/10 border border-danger/25 rounded-2xl p-4 text-xs text-danger font-semibold leading-relaxed shadow-sm">
+        <div className="flex gap-3 bg-md-error-container border border-md-error/20 rounded-2xl p-4 text-xs text-md-on-error-container font-medium leading-relaxed">
           <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
@@ -64,7 +64,7 @@ export function PhoneStep({ loading, error, onSubmit, onBack }: PhoneStepProps) 
           onChange={(e) => setPhone(e.target.value)}
           autoFocus
           icon={
-            <svg className="w-4 h-4 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-4 h-4 text-md-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
             </svg>
           }
@@ -92,7 +92,7 @@ export function PhoneStep({ loading, error, onSubmit, onBack }: PhoneStepProps) 
         </Button>
       </div>
 
-      <p className="text-[11px] text-surface-600 text-center leading-relaxed select-none">
+      <p className="text-[11px] text-md-on-surface-variant text-center leading-relaxed select-none">
         We will send a secure verification code to your Telegram app.
         <br />
         Session credentials are saved locally in this browser.

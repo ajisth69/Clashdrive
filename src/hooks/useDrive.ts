@@ -32,7 +32,7 @@ export function useDrive() {
 
       let folders = await getTopics(client, config);
 
-      const defaultTitles = ["Videos", "Audio", "Photos", "Documents"];
+      const defaultTitles = ["Videos", "Audio", "Photos", "Documents", "Favourite"];
       for (const title of defaultTitles) {
         if (!folders.some((f) => f.title.toLowerCase() === title.toLowerCase())) {
           setSyncStatus(`Initializing ${title} folder...`);

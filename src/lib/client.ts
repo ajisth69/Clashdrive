@@ -7,12 +7,17 @@ let _monitorInterval: ReturnType<typeof setInterval> | null = null;
 let _reconnecting = false;
 const _connectionListeners = new Set<(connected: boolean) => void>();
 
+// Simple mutex to prevent race conditions in getClient()
+let _clientInitPromise: Promise<TelegramClient> | null = null;
+
 /**
  * Register an active client singleton instance.
  */
 export function setClient(client: TelegramClient): void {
   stopConnectionMonitor();
+  void destroyHelperClients();
   _client = client;
+  _clientInitPromise = null;
 }
 
 /**
@@ -22,22 +27,28 @@ export function setClient(client: TelegramClient): void {
 export function getClient(): TelegramClient {
   if (_client) return _client;
 
-  const saved = localStorage.getItem(LS_SESSION) ?? "";
-  const session = new StringSession(saved);
-  const { apiId, apiHash } = getApiCredentials();
+  if (_clientInitPromise) return _clientInitPromise as any; // Return pending promise
 
-  _client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 10,
-    useWSS: true,
-    autoReconnect: true,
-    floodSleepThreshold: 300,
-    maxConcurrentDownloads: 128,
-    deviceModel: DEVICE_MODEL,
-    systemVersion: SYSTEM_VERSION,
-    appVersion: APP_VERSION,
-  });
+  _clientInitPromise = (async () => {
+    const saved = localStorage.getItem(LS_SESSION) ?? "";
+    const session = new StringSession(saved);
+    const { apiId, apiHash } = getApiCredentials();
 
-  return _client;
+    _client = new TelegramClient(session, apiId, apiHash, {
+      connectionRetries: 10,
+      useWSS: true,
+      autoReconnect: true,
+      floodSleepThreshold: 300,
+      maxConcurrentDownloads: 128,
+      deviceModel: DEVICE_MODEL,
+      systemVersion: SYSTEM_VERSION,
+      appVersion: APP_VERSION,
+    });
+
+    return _client;
+  })();
+
+  return _clientInitPromise as any;
 }
 
 export function createClientFromSession(
@@ -79,6 +90,7 @@ export function getCurrentSessionString(): string {
  */
 export async function destroyClient(): Promise<void> {
   stopConnectionMonitor();
+  await destroyHelperClients();
   if (_client) {
     await _client.disconnect();
     _client = null;
@@ -140,7 +152,7 @@ export async function ensureConnected(): Promise<boolean> {
   try {
     console.warn("[tgcd] Client disconnected, attempting reconnect...");
     await _client.connect();
-    console.log("[tgcd] Reconnected successfully.");
+    console.debug("[tgcd] Reconnected successfully.");
     notifyConnectionListeners(true);
     return true;
   } catch (err) {
@@ -176,4 +188,46 @@ export function stopConnectionMonitor(): void {
     clearInterval(_monitorInterval);
     _monitorInterval = null;
   }
+}
+
+const _helperClients: TelegramClient[] = [];
+
+/**
+ * Returns a helper client from the pool (lazily instantiating it if necessary).
+ * Creates helper clients sharing the same primary session credentials.
+ */
+export async function getHelperClient(index: number): Promise<TelegramClient> {
+  if (_helperClients[index]) {
+    const client = _helperClients[index];
+    if (!client.connected) {
+      await client.connect();
+    }
+    return client;
+  }
+
+  const saved = localStorage.getItem(LS_SESSION) ?? "";
+  if (!saved) {
+    throw new Error("No active session available for helper clients");
+  }
+
+  const { apiId, apiHash } = getApiCredentials();
+  const helper = createClientFromSession(saved, apiId, apiHash);
+  await helper.connect();
+  _helperClients[index] = helper;
+  return helper;
+}
+
+/**
+ * Destroy all clients in the helper pool.
+ */
+export async function destroyHelperClients(): Promise<void> {
+  for (let i = 0; i < _helperClients.length; i++) {
+    const client = _helperClients[i];
+    if (client) {
+      try {
+        await client.disconnect();
+      } catch { /* ignore */ }
+    }
+  }
+  _helperClients.length = 0;
 }

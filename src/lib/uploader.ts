@@ -3,6 +3,124 @@ import { CHUNK_SIZE, UPLOAD_WORKERS } from "../config/telegram";
 import { buildManifest } from "./manifest";
 import type { UploadProgress, DriveConfig } from "../types";
 import bigInt from "big-integer";
+import { getHelperClient } from "./client";
+
+export function generateVideoThumbnail(file: File | Blob): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) => {
+    const video = document.createElement("video");
+    video.preload = "auto";
+    video.muted = true;
+    video.playsInline = true;
+
+    const url = URL.createObjectURL(file);
+
+    const cleanUp = () => {
+      video.onseeked = null;
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      URL.revokeObjectURL(url);
+      video.src = "";
+      video.load();
+    };
+
+    video.onerror = () => {
+      cleanUp();
+      reject(new Error("Failed to load video for thumbnail extraction"));
+    };
+
+    video.onloadedmetadata = () => {
+      video.currentTime = 1.0;
+    };
+
+    video.onseeked = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        const width = 640;
+        const height = (video.videoHeight / video.videoWidth) * width || 480;
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          cleanUp();
+          reject(new Error("Failed to get 2D context"));
+          return;
+        }
+        ctx.drawImage(video, 0, 0, width, height);
+        canvas.toBlob((blob) => {
+          cleanUp();
+          if (blob) {
+            resolve(blob);
+          } else {
+            reject(new Error("Failed to create blob from canvas"));
+          }
+        }, "image/jpeg", 0.7);
+      } catch (err) {
+        cleanUp();
+        reject(err);
+      }
+    };
+
+    video.src = url;
+  });
+}
+
+export function generateImageThumbnail(file: File | Blob): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+
+    const cleanUp = () => {
+      img.onload = null;
+      img.onerror = null;
+      URL.revokeObjectURL(url);
+    };
+
+    img.onerror = () => {
+      cleanUp();
+      reject(new Error("Failed to load image for resizing"));
+    };
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        const maxDim = 1200;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = (height / width) * maxDim;
+            width = maxDim;
+          } else {
+            width = (width / height) * maxDim;
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          cleanUp();
+          reject(new Error("Failed to get canvas 2D context"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob((blob) => {
+          cleanUp();
+          if (blob) {
+            resolve(blob);
+          } else {
+            reject(new Error("Failed to create blob from canvas"));
+          }
+        }, "image/jpeg", 0.85);
+      } catch (err) {
+        cleanUp();
+        reject(err);
+      }
+    };
+
+    img.src = url;
+  });
+}
 
 async function runWithConcurrency<T>(
   tasks: (() => Promise<T>)[],
@@ -48,12 +166,12 @@ function getDynamicUploadConcurrency() {
   const cores = navigator.hardwareConcurrency || 4;
 
   if (cores >= 12) {
-    return { segments: 3, workers: 8 };
+    return { segments: 4, workers: 16 };
   }
   if (cores >= 8) {
-    return { segments: 2, workers: 8 };
+    return { segments: 3, workers: 12 };
   }
-  return { segments: 2, workers: 6 };
+  return { segments: 2, workers: 8 };
 }
 
 /**
@@ -188,6 +306,61 @@ export async function uploadFile(
     }
     emitProgress();
 
+    let thumbMsgId: number | undefined;
+
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const isVideo = ["mp4","mkv","avi","mov","webm","flv","3gp","ts","mts","m2ts"].includes(ext);
+    const isImage = ["png","jpg","jpeg","gif","webp","svg","bmp","avif","heic","tiff"].includes(ext);
+
+    if (isVideo || (isImage && file.size > 3 * 1024 * 1024)) {
+      try {
+        currentStatus = "preparing";
+        emitProgress();
+
+        let thumbBlob: Blob;
+        if (isVideo) {
+          thumbBlob = await generateVideoThumbnail(file);
+        } else {
+          thumbBlob = await generateImageThumbnail(file);
+        }
+
+        const thumbFile = new File([thumbBlob], `${file.name}.thumb.jpg`);
+        const uploadedThumb = await client.uploadFile({
+          file: thumbFile,
+          workers: 4,
+        });
+
+        const thumbResult = await client.invoke(
+          new Api.messages.SendMedia({
+            peer,
+            replyTo: new Api.InputReplyToMessage({ replyToMsgId: topicId }),
+            media: new Api.InputMediaUploadedDocument({
+              file: uploadedThumb,
+              mimeType: "image/jpeg",
+              attributes: [
+                new Api.DocumentAttributeFilename({
+                  fileName: thumbFile.name,
+                }),
+              ],
+            }),
+            message: "",
+            randomId: bigInt(Math.floor(Math.random() * 0xffffffffffff)),
+          })
+        );
+
+        const thumbUpdates = thumbResult as Api.Updates;
+        for (const upd of thumbUpdates.updates) {
+          if (upd.className === "UpdateNewChannelMessage") {
+            thumbMsgId = (upd as Api.UpdateNewChannelMessage).message.id;
+            uploadedMsgIds.push(thumbMsgId);
+            break;
+          }
+        }
+      } catch (thumbErr) {
+        console.warn("Failed to generate or upload thumbnail, proceeding without it:", thumbErr);
+      }
+    }
+
     const tasks = Array.from({ length: totalChunks }).map((_, i) => async () => {
       if (signal?.aborted) {
         throw new DOMException("Upload cancelled", "AbortError");
@@ -203,8 +376,9 @@ export async function uploadFile(
         }
         try {
           currentStatus = "uploading";
+          const activeClient = await getHelperClient(i % 3);
           const msgId = await uploadChunk(
-            client,
+            activeClient,
             peer,
             topicId,
             blob,
@@ -217,7 +391,7 @@ export async function uploadFile(
             signal
           );
           if (signal?.aborted) {
-            client.invoke(
+            activeClient.invoke(
               new Api.channels.DeleteMessages({
                 channel: peer,
                 id: [msgId],
@@ -274,12 +448,12 @@ export async function uploadFile(
       throw new DOMException("Upload cancelled", "AbortError");
     }
 
-    // Send the manifest message
     currentStatus = "finalizing";
     emitProgress();
-    const manifestJson = buildManifest(file.name, file.size, chunkMsgIds);
 
-    await client.invoke(
+    const manifestJson = buildManifest(file.name, file.size, chunkMsgIds, thumbMsgId);
+
+    const sentResult = await client.invoke(
       new Api.messages.SendMessage({
         peer,
         replyTo: new Api.InputReplyToMessage({ replyToMsgId: topicId }),
@@ -287,6 +461,17 @@ export async function uploadFile(
         randomId: bigInt(Math.floor(Math.random() * 0xffffffffffff)),
       })
     );
+
+    let manifestMsgId: number | undefined;
+    const sentUpdates = sentResult as Api.Updates;
+    if (sentUpdates && sentUpdates.updates) {
+      for (const upd of sentUpdates.updates) {
+        if (upd.className === "UpdateNewChannelMessage") {
+          manifestMsgId = (upd as Api.UpdateNewChannelMessage).message.id;
+          break;
+        }
+      }
+    }
 
     currentStatus = "done";
     emitProgress();

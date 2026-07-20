@@ -14,10 +14,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       <div className="w-full space-y-1.5">
         {label && (
           <label
-            className={`block text-xs font-bold uppercase tracking-wider select-none transition-colors duration-200 ${
+            className={`block text-xs font-medium tracking-wide select-none transition-colors duration-200 ${
               focused
-                ? "text-brand-500 dark:text-brand-400"
-                : "text-surface-650 dark:text-surface-700"
+                ? "text-md-primary"
+                : "text-md-on-surface-variant"
             }`}
           >
             {label}
@@ -25,18 +25,18 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         )}
         <div className="relative">
           {icon && (
-            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-surface-500 flex items-center justify-center pointer-events-none select-none">
+            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-md-on-surface-variant flex items-center justify-center pointer-events-none select-none">
               {icon}
             </div>
           )}
           <input
             ref={ref}
-            className={`w-full bg-surface-100/40 dark:bg-surface-200/20 border rounded-2xl px-4 py-3.5 text-sm text-surface-900 placeholder:text-surface-500/70 focus:outline-none transition-all duration-200 shadow-sm ${
+            className={`w-full bg-md-surface-container-lowest border rounded-xl px-4 py-3 text-sm text-md-on-surface placeholder:text-md-outline focus:outline-none transition-all duration-200 ${
               focused
-                ? "border-brand-500/60 ring-[3px] ring-brand-500/10 shadow-md shadow-brand-500/5"
-                : "border-surface-300/80 dark:border-surface-300/10"
+                ? "border-md-primary ring-2 ring-md-primary/15"
+                : "border-md-outline-variant"
             } ${icon ? "pl-11" : ""} ${
-              error ? "border-danger focus:border-danger focus:ring-danger/10" : ""
+              error ? "border-md-error focus:border-md-error focus:ring-md-error/15" : ""
             } ${className}`}
             onFocus={(e) => {
               setFocused(true);
@@ -50,7 +50,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           />
         </div>
         {error && (
-          <p className="text-xs text-danger font-medium mt-1 animate-spring-slide-up select-none">
+          <p className="text-xs text-md-error font-medium mt-1 animate-spring-slide-up select-none">
             {error}
           </p>
         )}

@@ -11,10 +11,23 @@ export function parseManifest(text: string): ChunkManifest | null {
       data &&
       data.type === "segmented_file" &&
       typeof data.fileName === "string" &&
+      data.fileName.length > 0 &&
+      data.fileName.length <= 255 &&
       typeof data.fileSize === "number" &&
-      Array.isArray(data.chunks)
+      data.fileSize >= 0 &&
+      data.fileSize <= 1024 * 1024 * 1024 * 50 && // 50 GB max
+      Array.isArray(data.chunks) &&
+      data.chunks.length > 0 &&
+      data.chunks.every((id: unknown) => typeof id === "number" && id > 0)
     ) {
-      return data as ChunkManifest;
+      const manifest: ChunkManifest = {
+        type: "segmented_file",
+        fileName: data.fileName,
+        fileSize: data.fileSize,
+        chunks: data.chunks,
+        ...(typeof data.thumb === "number" ? { thumb: data.thumb } : {}),
+      };
+      return manifest;
     }
   } catch {
     // Not JSON — regular message or a raw chunk, skip it
@@ -28,16 +41,20 @@ export function parseManifest(text: string): ChunkManifest | null {
 export function buildManifest(
   fileName: string,
   fileSize: number,
-  chunkMsgIds: number[]
+  chunkMsgIds: number[],
+  thumbMsgId?: number
 ): string {
   const manifest: ChunkManifest = {
     type: "segmented_file",
     fileName,
     fileSize,
     chunks: chunkMsgIds,
+    ...(thumbMsgId !== undefined ? { thumb: thumbMsgId } : {}),
   };
   return JSON.stringify(manifest);
 }
+
+
 
 /**
  * Format bytes into a human-readable string.

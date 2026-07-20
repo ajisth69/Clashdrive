@@ -14,7 +14,7 @@ export function getApiCredentials(): { apiId: number; apiHash: string } {
  * Client Identification for Telegram Active Sessions screen
  */
 export const DEVICE_MODEL = "ClashDrive";
-export const APP_VERSION = "1.0";
+export const APP_VERSION = "2.0";
 export const SYSTEM_VERSION = typeof navigator !== "undefined" && navigator.userAgent
   ? (navigator.userAgent.includes("Windows") ? "Windows" : navigator.userAgent.includes("Mac") ? "macOS" : navigator.userAgent.includes("Linux") ? "Linux" : "Web")
   : "Web";

@@ -36,7 +36,142 @@ declare global {
   interface Window {
     XLSX?: XlsxApi;
     docx?: DocxPreviewApi;
+    ePub?: any;
   }
+}
+
+class BiquadFilter {
+  b0: number; b1: number; b2: number;
+  a1: number; a2: number;
+  x1 = 0; x2 = 0;
+  y1 = 0; y2 = 0;
+
+  constructor(cutoff: number, sampleRate: number) {
+    const ff = Math.min(0.45, cutoff / sampleRate);
+    const ita = 1.0 / Math.tan(Math.PI * ff);
+    const q = Math.sqrt(2.0);
+    const den = 1.0 + q * ita + ita * ita;
+    this.b0 = 1.0 / den;
+    this.b1 = 2.0 / den;
+    this.b2 = 1.0 / den;
+    this.a1 = 2.0 * (1.0 - ita * ita) / den;
+    this.a2 = (1.0 - q * ita + ita * ita) / den;
+  }
+
+  process(x: number): number {
+    const y = this.b0 * x + this.b1 * this.x1 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1;
+    this.x1 = x;
+    this.y2 = this.y1;
+    this.y1 = y;
+    return y;
+  }
+}
+
+function decodeDsfToWav(arrayBuffer: ArrayBuffer): Blob | null {
+  const view = new DataView(arrayBuffer);
+  if (view.getUint32(0, true) !== 0x20445344) { // "DSD "
+    return null;
+  }
+  
+  let offset = 28;
+  let sampleRate = 2822400;
+  let channels = 2;
+  let blockSize = 4096;
+  let dataOffset = 0;
+  let dataSize = 0;
+  
+  while (offset < arrayBuffer.byteLength - 12) {
+    const chunkHeader = view.getUint32(offset, true);
+    const chunkSize = Number(view.getBigUint64(offset + 4, true));
+    
+    if (chunkHeader === 0x20746d66) { // "fmt "
+      channels = view.getUint32(offset + 24, true);
+      sampleRate = view.getUint32(offset + 28, true);
+      if (chunkSize >= 48) {
+        blockSize = view.getUint32(offset + 44, true);
+      }
+    } else if (chunkHeader === 0x61746164) { // "data"
+      dataOffset = offset + 12;
+      dataSize = chunkSize - 12;
+      break;
+    }
+    offset += chunkSize;
+  }
+  
+  if (dataOffset === 0 || dataSize === 0) return null;
+  
+  const dsdData = new Uint8Array(arrayBuffer, dataOffset, dataSize);
+  const groupSize = blockSize * channels;
+  const numGroups = Math.floor(dataSize / groupSize);
+  
+  const samplesPerChannelPerGroup = blockSize / 8;
+  const numOutputSamples = numGroups * samplesPerChannelPerGroup;
+  
+  const pcmData = new Float32Array(numOutputSamples * channels);
+  const wavSampleRate = sampleRate / 64;
+  
+  const lpFilters = Array.from({ length: channels }, () => new BiquadFilter(16000, wavSampleRate));
+
+  let pcmIdx = 0;
+  for (let g = 0; g < numGroups; g++) {
+    const groupStart = g * groupSize;
+    for (let s = 0; s < samplesPerChannelPerGroup; s++) {
+      for (let c = 0; c < channels; c++) {
+        const channelByteOffset = groupStart + (c * blockSize) + (s * 8);
+        let onesCount = 0;
+        for (let b = 0; b < 8; b++) {
+          let temp = dsdData[channelByteOffset + b];
+          while (temp > 0) {
+            onesCount += temp & 1;
+            temp >>= 1;
+          }
+        }
+        const pcmVal = (onesCount / 32) - 1.0;
+        pcmData[pcmIdx + c] = lpFilters[c].process(pcmVal);
+      }
+      pcmIdx += channels;
+    }
+  }
+  
+  const wavHeader = new ArrayBuffer(44);
+  const wavView = new DataView(wavHeader);
+  
+  const writeString = (view: DataView, offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+  
+  const wavByteRate = wavSampleRate * channels * 2;
+  const wavBlockAlign = channels * 2;
+
+  writeString(wavView, 0, 'RIFF');
+  wavView.setUint32(4, 36 + numOutputSamples * channels * 2, true);
+  writeString(wavView, 8, 'WAVE');
+  writeString(wavView, 12, 'fmt ');
+  wavView.setUint32(16, 16, true);
+  wavView.setUint16(20, 1, true);
+  wavView.setUint16(22, channels, true);
+  wavView.setUint32(24, wavSampleRate, true);
+  wavView.setUint32(28, wavByteRate, true);
+  wavView.setUint16(32, wavBlockAlign, true);
+  wavView.setUint16(34, 16, true);
+  writeString(wavView, 36, 'data');
+  wavView.setUint32(40, numOutputSamples * channels * 2, true);
+  
+  const outputBuffer = new Uint8Array(wavHeader.byteLength + numOutputSamples * channels * 2);
+  outputBuffer.set(new Uint8Array(wavHeader), 0);
+  
+  const outView = new DataView(outputBuffer.buffer);
+  let outOffset = 44;
+  for (let i = 0; i < pcmData.length; i++) {
+    const pcmSample = Math.max(-32768, Math.min(32767, pcmData[i] * 32767));
+    outView.setInt16(outOffset, pcmSample, true);
+    outOffset += 2;
+  }
+  
+  return new Blob([outputBuffer], { type: "audio/wav" });
 }
 
 interface PreviewModalProps {
@@ -46,6 +181,9 @@ interface PreviewModalProps {
   error?: string | null;
   onDownload?: () => void | Promise<void>;
   onClose: () => void;
+  isLiked?: boolean;
+  onToggleLike?: () => void;
+  onOpenMoveCopy?: () => void;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -69,7 +207,17 @@ function clamp(val: number, min: number, max: number) {
    MAIN COMPONENT
    ═══════════════════════════════════════════════════════════ */
 
-export function PreviewModal({ file, url, progress, error, onDownload, onClose }: PreviewModalProps) {
+export function PreviewModal({
+  file,
+  url,
+  progress,
+  error,
+  onDownload,
+  onClose,
+  isLiked = false,
+  onToggleLike,
+  onOpenMoveCopy,
+}: PreviewModalProps) {
   // ─── Core modal state ───
   const [closing, setClosing] = useState(false);
 
@@ -119,6 +267,23 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
   const [loadingDocx, setLoadingDocx] = useState(false);
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // ─── DSD state ───
+  const [dsdDecodedUrl, setDsdDecodedUrl] = useState<string | null>(null);
+  const [dsdLoading, setDsdLoading] = useState(false);
+  const [dsdError, setDsdError] = useState<string | null>(null);
+
+  // ─── Audio visualizer refs ───
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+
+  // ─── EPUB state ───
+  const [loadingEpub, setLoadingEpub] = useState(false);
+  const [epubError, setEpubError] = useState<string | null>(null);
+  const epubContainerRef = useRef<HTMLDivElement | null>(null);
+  const renditionRef = useRef<any>(null);
+
   // ─── File info popover ───
   const [showFileInfo, setShowFileInfo] = useState(false);
 
@@ -130,12 +295,15 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
   const mimeType = file.mimeType || "";
 
   const isImage = mimeType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
-  const isVideo = mimeType.startsWith("video/") || ["mp4", "webm", "ogg", "mov"].includes(ext);
-  const isAudio = mimeType.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a", "flac"].includes(ext);
+  const isVideo = mimeType.startsWith("video/") || ["mp4", "webm", "ogg", "mov", "mkv", "avi", "3gp", "flv"].includes(ext);
+  const isAudio = mimeType.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a", "flac", "dsf", "dff", "opus", "oga", "caf", "aac"].includes(ext);
   const isText = ["txt", "md", "json", "js", "ts", "py", "rs", "go", "html", "css", "xml"].includes(ext);
   const isPdf = mimeType === "application/pdf" || ext === "pdf";
   const isDocx = ext === "docx";
   const isSheet = ["xlsx", "xls", "csv"].includes(ext);
+  const isEpub = ext === "epub";
+  const isDsdFile = ["dsf", "dff"].includes(ext);
+  const isDsd = false; // Decoded on-the-fly inside the streaming pipeline
 
   /* ═══════════════════════════════════════════════════════
      CLOSE HANDLER
@@ -144,6 +312,9 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
   const handleClose = useCallback(() => {
     if (audioRef.current) audioRef.current.pause();
     if (videoRef.current) videoRef.current.pause();
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+    }
     setClosing(true);
     setTimeout(onClose, 280);
   }, [onClose]);
@@ -212,11 +383,97 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleClose, isVideo, isAudio, isImage]);
 
-  // Lock body scroll
+  // Lock body scroll and cleanup audio context / timers
   useEffect(() => {
     document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = ""; };
-  }, []);
+    return () => {
+      document.body.style.overflow = "";
+      if (controlsTimer.current) {
+        clearTimeout(controlsTimer.current);
+      }
+      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+        try {
+          audioCtxRef.current.close();
+        } catch {}
+        audioCtxRef.current = null;
+      }
+      analyserRef.current = null;
+      sourceRef.current = null;
+    };
+  }, [file.id, url]);
+
+  // Concentric Circles Audio Visualizer Loop
+  useEffect(() => {
+    if (!isAudio) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animationFrameId: number;
+    let phase = 0;
+    let scale = 1.0;
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    const draw = () => {
+      const w = canvas.width / window.devicePixelRatio;
+      const h = canvas.height / window.devicePixelRatio;
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w / 2;
+      const cy = h / 2;
+
+      if (audioPlaying) {
+        phase += 0.04;
+        scale = scale * 0.95 + 1.15 * 0.05;
+      } else {
+        phase += 0.005;
+        scale = scale * 0.95 + 1.0 * 0.05;
+      }
+
+      // Draw glowing waves concentric layers
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        const radius = (w * 0.3) + i * 14 * scale;
+        const opacity = (0.16 - i * 0.045) * (audioPlaying ? 1.4 : 0.6);
+        
+        ctx.strokeStyle = `rgba(6, 182, 212, ${opacity})`;
+        ctx.lineWidth = i === 0 ? 3 : 1.5;
+        
+        const points = 72;
+        for (let p = 0; p <= points; p++) {
+          const angle = (p / points) * Math.PI * 2;
+          const waveAmp = audioPlaying 
+            ? (5 + Math.sin(angle * 7 + phase * 2.2) * 4) 
+            : Math.sin(angle * 4 + phase) * 0.5;
+          const r = radius + waveAmp;
+          const x = cx + Math.cos(angle) * r;
+          const y = cy + Math.sin(angle) * r;
+          if (p === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      animationFrameId = requestAnimationFrame(draw);
+    };
+
+    draw();
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      window.removeEventListener("resize", resize);
+    };
+  }, [isAudio, audioPlaying]);
 
   /* ═══════════════════════════════════════════════════════
      IMAGE: ZOOM & PAN
@@ -372,6 +629,30 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
 
   const toggleAudioPlay = useCallback(() => {
     if (!audioRef.current) return;
+
+    if (!audioCtxRef.current) {
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const ctx = new AudioContextClass();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        
+        const source = ctx.createMediaElementSource(audioRef.current);
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
+        
+        audioCtxRef.current = ctx;
+        analyserRef.current = analyser;
+        sourceRef.current = source;
+      } catch (err) {
+        console.warn("Web Audio API not supported:", err);
+      }
+    }
+
+    if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+      audioCtxRef.current.resume();
+    }
+
     if (audioPlaying) {
       audioRef.current.pause();
       setAudioPlaying(false);
@@ -488,6 +769,238 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
   }, [isDocx, url, file.id]);
 
   /* ═══════════════════════════════════════════════════════
+     DSD DECODER HOOK
+     ═══════════════════════════════════════════════════════ */
+
+  useEffect(() => {
+    if (!isDsd || !url) return;
+    let cancelled = false;
+    setDsdLoading(true);
+    setDsdError(null);
+    
+    fetch(url)
+      .then((r) => {
+        if (!r.ok) throw new Error("Failed to fetch DSD file");
+        return r.arrayBuffer();
+      })
+      .then((buffer) => {
+        if (cancelled) return;
+        const blob = decodeDsfToWav(buffer);
+        if (!blob) throw new Error("Failed to decode DSD file layout (DSF supported only)");
+        const blobUrl = URL.createObjectURL(blob);
+        setDsdDecodedUrl(blobUrl);
+        setDsdLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("DSD decode error:", err);
+        setDsdError(err.message || "Failed to decode DSD audio.");
+        setDsdLoading(false);
+      });
+      
+    return () => {
+      cancelled = true;
+      setDsdDecodedUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, [isDsd, url]);
+
+  /* ═══════════════════════════════════════════════════════
+     AUDIO VISUALIZER RENDERING LOOP
+     ═══════════════════════════════════════════════════════ */
+
+  useEffect(() => {
+    let animationId: number;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    
+    const resizeCanvas = () => {
+      canvas.width = canvas.clientWidth * window.devicePixelRatio;
+      canvas.height = canvas.clientHeight * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    };
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    
+    const bufferLength = analyserRef.current ? analyserRef.current.frequencyBinCount : 0;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const draw = () => {
+      animationId = requestAnimationFrame(draw);
+      
+      const width = canvas.width / window.devicePixelRatio;
+      const height = canvas.height / window.devicePixelRatio;
+      
+      ctx.fillStyle = "rgba(18, 18, 24, 0.18)";
+      ctx.fillRect(0, 0, width, height);
+      
+      if (analyserRef.current && audioPlaying) {
+        analyserRef.current.getByteFrequencyData(dataArray);
+        
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const baseRadius = Math.min(width, height) * 0.28;
+        
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = "rgba(96, 165, 250, 0.4)";
+        
+        ctx.beginPath();
+        for (let i = 0; i < bufferLength; i++) {
+          const angle = (i / bufferLength) * Math.PI * 2;
+          const value = dataArray[i] / 255;
+          const radius = baseRadius + value * 22;
+          
+          const x = centerX + Math.cos(angle) * radius;
+          const y = centerY + Math.sin(angle) * radius;
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.closePath();
+        
+        const gradient = ctx.createRadialGradient(centerX, centerY, baseRadius, centerX, centerY, baseRadius + 22);
+        gradient.addColorStop(0, "#60a5fa");
+        gradient.addColorStop(1, "#a78bfa");
+        
+        ctx.strokeStyle = gradient;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        
+        ctx.shadowBlur = 4;
+        ctx.beginPath();
+        for (let i = 0; i < bufferLength; i++) {
+          const angle = (i / bufferLength) * Math.PI * 2;
+          const value = dataArray[bufferLength - 1 - i] / 255;
+          const radius = baseRadius - 6 - value * 10;
+          
+          const x = centerX + Math.cos(angle) * radius;
+          const y = centerY + Math.sin(angle) * radius;
+          
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.closePath();
+        ctx.strokeStyle = "rgba(167, 139, 250, 0.3)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        ctx.shadowBlur = 0;
+      } else {
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const baseRadius = Math.min(width, height) * 0.28;
+        
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, baseRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    };
+    
+    draw();
+    
+    return () => {
+      cancelAnimationFrame(animationId);
+      window.removeEventListener("resize", resizeCanvas);
+    };
+  }, [audioPlaying]);
+
+  /* ═══════════════════════════════════════════════════════
+     EPUB EBOOK LOADER
+     ═══════════════════════════════════════════════════════ */
+
+  useEffect(() => {
+    if (!isEpub || !url || !epubContainerRef.current) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const container = epubContainerRef.current;
+    setLoadingEpub(true);
+    setEpubError(null);
+    
+    loadScript("https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js")
+      .then(() => loadScript("https://cdnjs.cloudflare.com/ajax/libs/epub.js/0.3.88/epub.min.js"))
+      .then(() => fetch(url, { signal: controller.signal }))
+      .then((r) => r.arrayBuffer())
+      .then((buffer) => {
+        if (cancelled || !container) return;
+        const ePub = window.ePub;
+        if (!ePub) throw new Error("EPUB reader library did not load");
+        
+        container.innerHTML = "";
+        const book = ePub(buffer);
+        const rendition = book.renderTo(container, {
+          width: "100%",
+          height: "100%",
+          flow: "paginated",
+          stylesheet: "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&display=swap"
+        });
+        
+        renditionRef.current = rendition;
+        
+        rendition.themes.default({
+          body: {
+            background: "transparent !important",
+            color: "#e2e8f0 !important",
+            "font-family": "'Outfit', sans-serif !important",
+            "line-height": "1.75 !important",
+            "font-size": "16px !important",
+            padding: "0 20px !important"
+          },
+          p: {
+            "margin-bottom": "1rem !important"
+          },
+          h1: {
+            color: "#ffffff !important",
+            "font-weight": "700 !important"
+          },
+          h2: {
+            color: "#ffffff !important",
+            "font-weight": "600 !important"
+          }
+        });
+        
+        return rendition.display();
+      })
+      .then(() => {
+        if (!cancelled) {
+          setLoadingEpub(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error("EPUB render error:", err);
+          setEpubError(err.message || "Failed to render EPUB.");
+          setLoadingEpub(false);
+        }
+      });
+      
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (renditionRef.current) {
+        try {
+          renditionRef.current.destroy();
+        } catch {}
+      }
+      if (container) {
+        container.innerHTML = "";
+      }
+    };
+  }, [isEpub, url]);
+
+  /* ═══════════════════════════════════════════════════════
      LOADING FLAGS
      ═══════════════════════════════════════════════════════ */
 
@@ -561,6 +1074,36 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </button>
+
+            {/* Star Favorite Toggle */}
+            {onToggleLike && (
+              <button
+                onClick={onToggleLike}
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer ${
+                  isLiked 
+                    ? "bg-yellow-500/25 text-yellow-400" 
+                    : "bg-white/[0.08] hover:bg-white/[0.15] text-white/60 hover:text-white/90"
+                }`}
+                title={isLiked ? "Remove from Favourites" : "Add to Favourites"}
+              >
+                <svg className="w-4 h-4" fill={isLiked ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={isLiked ? 0 : 2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.907c.969 0 1.371 1.24.588 1.81l-3.97 2.883a1 1 0 00-.364 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.971-2.883a1 1 0 00-1.175 0l-3.97 2.883c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.364-1.118L2.98 10.1c-.783-.57-.38-1.81.588-1.81h4.906a1 1 0 00.951-.69l1.519-4.674z" />
+                </svg>
+              </button>
+            )}
+
+            {/* Move / Copy */}
+            {onOpenMoveCopy && (
+              <button
+                onClick={onOpenMoveCopy}
+                className="w-9 h-9 rounded-full bg-white/[0.08] hover:bg-brand-500/25 text-white/60 hover:text-brand-400 flex items-center justify-center transition-all duration-200 cursor-pointer"
+                title="Move or Copy File"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+              </button>
+            )}
 
             {/* Download */}
             {onDownload && (
@@ -915,35 +1458,54 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
               {isAudio && (
                 <div className="w-full max-w-md mx-auto p-8 select-none">
                   <div className="bg-[#111115] border border-white/[0.06] rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl">
-                    {/* Album art placeholder */}
-                    <div className="relative w-32 h-32 sm:w-40 sm:h-40 mx-auto">
-                      <div className={`w-full h-full rounded-2xl bg-gradient-to-br from-brand-500/30 to-accent-500/20 flex items-center justify-center border border-white/[0.06] shadow-inner ${audioPlaying ? "animate-pulse-slow" : ""}`}>
-                        <svg className="w-14 h-14 sm:w-16 sm:h-16 text-white/30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                    {isDsd && dsdLoading ? (
+                      <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+                        <svg className="animate-spin h-6 w-6 text-brand-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                          <circle cx="12" cy="12" r="10" strokeWidth={4} className="opacity-25" />
+                          <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" className="opacity-75" />
                         </svg>
+                        <span className="text-white/40 text-xs font-semibold">Decoding high-resolution DSD stream...</span>
                       </div>
-                      {/* Playing indicator ring */}
-                      {audioPlaying && (
-                        <div className="absolute -inset-2 rounded-3xl border-2 border-brand-500/20 animate-ping pointer-events-none" style={{ animationDuration: "2s" }} />
-                      )}
-                    </div>
+                    ) : isDsd && dsdError ? (
+                      <div className="text-center py-12 space-y-3">
+                        <svg className="w-10 h-10 mx-auto text-danger/75" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span className="text-danger/80 text-xs font-semibold block">{dsdError}</span>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Album art placeholder / Visualizer */}
+                        <div className="relative w-32 h-32 sm:w-40 sm:h-40 mx-auto overflow-hidden rounded-2xl border border-white/[0.06] shadow-inner bg-slate-900 flex items-center justify-center">
+                          <canvas 
+                            ref={canvasRef} 
+                            className="absolute inset-0 w-full h-full pointer-events-none" 
+                          />
+                          <div className={`z-10 w-16 h-16 rounded-full bg-black/45 backdrop-blur-md border border-white/10 flex items-center justify-center transition-all ${audioPlaying ? "scale-90 opacity-40 hover:opacity-100" : "scale-100"}`}>
+                            <svg className="w-8 h-8 text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                            </svg>
+                          </div>
+                        </div>
 
-                    {/* File name */}
-                    <div className="text-center">
-                      <h4 className="text-white/90 text-sm font-semibold truncate px-4">{file.name}</h4>
-                      <p className="text-white/30 text-[10px] uppercase tracking-wider font-medium mt-1">{formatBytes(file.size)} • Audio</p>
-                    </div>
+                        {/* File name */}
+                        <div className="text-center">
+                          <h4 className="text-white/90 text-sm font-semibold truncate px-4">{file.name}</h4>
+                          <p className="text-white/30 text-[10px] uppercase tracking-wider font-medium mt-1">{formatBytes(file.size)} • {isDsdFile ? "DSD Audio" : "Audio"}</p>
+                        </div>
 
-                    <audio
-                      ref={audioRef}
-                      src={url}
-                      preload="auto"
-                      crossOrigin="anonymous"
-                      onTimeUpdate={() => { if (audioRef.current) setAudioTime(audioRef.current.currentTime); }}
-                      onLoadedMetadata={() => { if (audioRef.current) setAudioDuration(audioRef.current.duration); }}
-                      onEnded={() => setAudioPlaying(false)}
-                      className="hidden"
-                    />
+                        <audio
+                          ref={audioRef}
+                          src={isDsd ? (dsdDecodedUrl || "") : (url || "")}
+                          preload="auto"
+                          crossOrigin="anonymous"
+                          onTimeUpdate={() => { if (audioRef.current) setAudioTime(audioRef.current.currentTime); }}
+                          onLoadedMetadata={() => { if (audioRef.current) setAudioDuration(audioRef.current.duration); }}
+                          onEnded={() => setAudioPlaying(false)}
+                          className="hidden"
+                        />
+                      </>
+                    )}
 
                     {/* Seek bar */}
                     <div className="space-y-2">
@@ -1060,8 +1622,38 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
                   PDF PREVIEW
                   ══════════════════════════════════════════ */}
               {isPdf && (
-                <div className="w-full h-full max-w-5xl mx-auto p-2 sm:p-4">
-                  <div className="w-full h-full bg-[#111] border border-white/[0.06] rounded-xl overflow-hidden shadow-2xl">
+                <div className="w-full h-full max-w-5xl mx-auto p-2 sm:p-4 flex flex-col">
+                  {/* Browser-style header */}
+                  <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 bg-[#141414] border border-white/[0.06] rounded-t-xl">
+                    {/* Traffic lights */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+                      <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
+                      <span className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
+                    </div>
+                    {/* Document badge */}
+                    <div className="flex items-center gap-2 bg-white/[0.04] border border-white/[0.06] rounded-lg px-3 py-1 flex-1 min-w-0">
+                      <svg className="w-3.5 h-3.5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      <span className="text-[11px] font-semibold text-white/50 truncate">{file.name}</span>
+                      <span className="text-[9px] font-bold text-red-400/80 bg-red-500/10 border border-red-500/15 px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0">PDF</span>
+                    </div>
+                    {/* Download shortcut */}
+                    {onDownload && (
+                      <button
+                        onClick={onDownload}
+                        className="h-7 px-3 rounded-lg bg-white/[0.06] hover:bg-brand-500/20 text-[10px] font-bold text-white/50 hover:text-brand-400 transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Save
+                      </button>
+                    )}
+                  </div>
+                  {/* Iframe */}
+                  <div className="flex-1 min-h-0 bg-[#111] border-x border-b border-white/[0.06] rounded-b-xl overflow-hidden shadow-2xl">
                     <iframe
                       src={`${url}#toolbar=0&navpanes=0`}
                       className="w-full h-full border-0 bg-[#111]"
@@ -1147,7 +1739,7 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
                   DOCX PREVIEW
                   ══════════════════════════════════════════ */}
               {isDocx && (
-                <div className="w-full h-full max-w-4xl mx-auto p-2 sm:p-4 flex flex-col">
+                <div className="w-full h-full max-w-4xl mx-auto p-2 sm:p-4 flex flex-col relative">
                   {loadingDocx && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10 gap-3">
                       <svg className="animate-spin h-5 w-5 text-brand-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -1157,23 +1749,82 @@ export function PreviewModal({ file, url, progress, error, onDownload, onClose }
                       <span className="text-white/40 text-sm">Rendering document pages...</span>
                     </div>
                   )}
-                  <div className="flex-1 overflow-auto rounded-xl bg-white border border-white/[0.06] p-6 md:p-12 text-left select-text">
-                    <style dangerouslySetInnerHTML={{__html: `
-                      .docx-preview-body { background: transparent !important; color: #333333 !important; font-family: 'Inter', sans-serif !important; }
-                      .docx-preview-body p { margin-bottom: 0.75rem !important; line-height: 1.6 !important; }
-                      .docx-preview-body h1, .docx-preview-body h2, .docx-preview-body h3 { color: #111111 !important; font-weight: 700 !important; margin-top: 1.5rem !important; margin-bottom: 0.75rem !important; }
-                      .docx-preview-body table { width: 100% !important; border-collapse: collapse !important; margin: 1rem 0 !important; }
-                      .docx-preview-body td, .docx-preview-body th { border: 1px solid #ddd !important; padding: 8px !important; }
-                    `}} />
-                    <div ref={docxContainerRef} className="w-full h-full" />
+                  {/* Document desk header */}
+                  <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-[#1a1a1a] border border-white/[0.06] rounded-t-xl">
+                    <svg className="w-4 h-4 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <span className="text-[11px] font-semibold text-white/50 truncate flex-1">{file.name}</span>
+                    <span className="text-[9px] font-bold text-blue-400/80 bg-blue-500/10 border border-blue-500/15 px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0">DOCX</span>
                   </div>
+                  {/* White page with shadow - simulates real paper */}
+                  <div className="flex-1 overflow-auto bg-[#2a2a2e] border-x border-b border-white/[0.06] rounded-b-xl">
+                    <div className="mx-auto my-6 sm:my-8 max-w-[720px] bg-white rounded-sm shadow-[0_2px_24px_rgba(0,0,0,0.35)] p-8 sm:p-12 md:p-16 text-left select-text min-h-[80%]">
+                      <style dangerouslySetInnerHTML={{__html: `
+                        .docx-preview-body { background: transparent !important; color: #1a1a1a !important; font-family: 'Inter', 'Georgia', serif !important; font-size: 14px !important; }
+                        .docx-preview-body p { margin-bottom: 0.75rem !important; line-height: 1.75 !important; color: #333 !important; }
+                        .docx-preview-body h1, .docx-preview-body h2, .docx-preview-body h3 { color: #111111 !important; font-weight: 700 !important; margin-top: 1.5rem !important; margin-bottom: 0.75rem !important; }
+                        .docx-preview-body table { width: 100% !important; border-collapse: collapse !important; margin: 1rem 0 !important; }
+                        .docx-preview-body td, .docx-preview-body th { border: 1px solid #ddd !important; padding: 8px !important; }
+                      `}} />
+                      <div ref={docxContainerRef} className="w-full h-full" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ══════════════════════════════════════════
+                  EPUB PREVIEW
+                  ══════════════════════════════════════════ */}
+              {isEpub && (
+                <div className="w-full h-full max-w-4xl mx-auto p-2 sm:p-4 flex flex-col relative">
+                  {loadingEpub && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10 gap-3">
+                      <svg className="animate-spin h-5 w-5 text-brand-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <circle cx="12" cy="12" r="10" strokeWidth={4} className="opacity-25" />
+                        <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" className="opacity-75" />
+                      </svg>
+                      <span className="text-white/40 text-sm">Loading book pages...</span>
+                    </div>
+                  )}
+                  {epubError ? (
+                    <div className="flex-1 flex flex-col items-center justify-center gap-3">
+                      <svg className="w-12 h-12 text-danger/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <p className="text-white font-semibold">{epubError}</p>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col overflow-hidden bg-[#121214] border border-white/[0.06] rounded-2xl relative shadow-2xl p-4">
+                      <div ref={epubContainerRef} className="flex-1 w-full overflow-hidden text-white" />
+                      
+                      {/* Pagination buttons */}
+                      <div className="flex items-center justify-between border-t border-white/[0.06] pt-3 mt-3 px-4 shrink-0">
+                        <button
+                          onClick={() => renditionRef.current?.prev()}
+                          className="px-4 py-2 text-xs font-bold text-white/70 hover:text-white bg-white/[0.06] hover:bg-white/[0.1] rounded-xl active:scale-95 transition-all cursor-pointer"
+                        >
+                          Previous Page
+                        </button>
+                        <span className="text-[10px] text-white/30 font-bold uppercase tracking-wider select-none">
+                          EPUB Ebook Reader
+                        </span>
+                        <button
+                          onClick={() => renditionRef.current?.next()}
+                          className="px-4 py-2 text-xs font-bold text-white/70 hover:text-white bg-white/[0.06] hover:bg-white/[0.1] rounded-xl active:scale-95 transition-all cursor-pointer"
+                        >
+                          Next Page
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* ══════════════════════════════════════════
                   UNSUPPORTED FILE TYPE
                   ══════════════════════════════════════════ */}
-              {!isImage && !isVideo && !isAudio && !isText && !isPdf && !isSheet && !isDocx && (
+              {!isImage && !isVideo && !isAudio && !isText && !isPdf && !isSheet && !isDocx && !isEpub && (
                 <div className="text-center p-8">
                   <div className="w-16 h-16 mx-auto rounded-2xl bg-white/[0.06] flex items-center justify-center mb-4">
                     <FileIcon fileName={file.name} className="w-8 h-8" />

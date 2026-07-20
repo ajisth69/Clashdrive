@@ -22,15 +22,15 @@ export function PasswordStep({ loading, error, onSubmit }: PasswordStepProps) {
   return (
     <form onSubmit={handleSubmit} className="space-y-6 animate-slide-up">
       <div className="text-center space-y-2 mb-8">
-        <div className="w-16 h-16 mx-auto rounded-2xl bg-warning/10 border border-warning/20 flex items-center justify-center mb-4 text-warning">
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <div className="w-14 h-14 mx-auto rounded-2xl bg-warning-container flex items-center justify-center mb-4 text-on-warning-container">
+          <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
           </svg>
         </div>
-        <h2 className="text-2xl font-extrabold text-surface-900 tracking-tight">
+        <h2 className="text-2xl font-semibold text-md-on-surface tracking-tight">
           Cloud Password
         </h2>
-        <p className="text-surface-600 text-sm">
+        <p className="text-md-on-surface-variant text-sm">
           Two-Factor Authentication is enabled on this account
         </p>
       </div>
@@ -46,7 +46,7 @@ export function PasswordStep({ loading, error, onSubmit }: PasswordStepProps) {
           autoFocus
           icon={
             <svg
-              className="w-4 h-4 text-surface-500"
+              className="w-4 h-4 text-md-on-surface-variant"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -63,7 +63,7 @@ export function PasswordStep({ loading, error, onSubmit }: PasswordStepProps) {
         <button
           type="button"
           onClick={() => setShowPassword(!showPassword)}
-          className="absolute right-4.5 top-[39px] text-surface-500 hover:text-surface-800 transition-colors cursor-pointer"
+          className="absolute right-4 top-[38px] text-md-on-surface-variant hover:text-md-on-surface transition-colors cursor-pointer p-1 rounded-full"
         >
           {showPassword ? (
             <svg

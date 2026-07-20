@@ -5,6 +5,7 @@ import { getApiCredentials, LS_PHONE, LS_SESSION, DEVICE_MODEL, SYSTEM_VERSION, 
 import {
   createClientFromSession,
   destroyClient,
+  destroyHelperClients,
   ensureConnected,
   getCurrentSessionString,
   hasPersistedSession,
@@ -263,6 +264,7 @@ export function useAuth() {
       if (!account || account.userId === activeAccountId) return;
       setState((s) => ({ ...s, loading: true, error: null }));
       if (clientRef.current) await clientRef.current.disconnect();
+      await destroyHelperClients();
 
       try {
         if (!account.session) {
@@ -319,6 +321,24 @@ export function useAuth() {
     setState({ step: "credentials", phone: "", loading: false, error: null });
   }, []);
 
+  const clearCache = useCallback(async () => {
+    await destroyClient();
+    if (typeof indexedDB !== "undefined") {
+      try {
+        indexedDB.deleteDatabase("clashdrive_cache");
+      } catch (e) {
+        console.warn("Failed to delete IndexedDB cache", e);
+      }
+    }
+    localStorage.clear();
+    sessionStorage.clear();
+    setAccounts([]);
+    setConnected(false);
+    setUserProfile(null);
+    setActiveAccountId(null);
+    setState({ step: "credentials", phone: "", loading: false, error: null });
+  }, []);
+
   const removeAccount = useCallback(
     async (userId: string) => {
       const next = readAccounts().filter((account) => account.userId !== userId);
@@ -359,5 +379,6 @@ export function useAuth() {
     switchAccount,
     removeAccount,
     logout,
+    clearCache,
   };
 }

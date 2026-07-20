@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "./hooks/useAuth";
 import { useDrive } from "./hooks/useDrive";
 import { useFiles } from "./hooks/useFiles";
@@ -7,10 +7,16 @@ import { Dashboard } from "./components/drive/Dashboard";
 import { LoadingScreen } from "./components/layout/LoadingScreen";
 import { PreviewModal } from "./components/drive/PreviewModal";
 import { handleStreamRequest, normalizeRenamedFileName, downloadFileToMemory, mimeTypeFromName, preFetchMessages, downloadChunkToCache } from "./lib/downloader";
+
 import { useTheme } from "./hooks/useTheme";
 import type { DriveFile, TopicFolder } from "./types";
 import { Api } from "telegram";
 import { Modal } from "./components/ui/Modal";
+import { ShareModal } from "./components/drive/ShareModal";
+import { ReceiveShareModal } from "./components/drive/ReceiveShareModal";
+import { MoveCopyModal } from "./components/drive/MoveCopyModal";
+import { RenameModal } from "./components/drive/RenameModal";
+import { ensureBotIsAdmin, DEFAULT_WORKER_URL } from "./lib/bot";
 
 const MB = 1024 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 80 * MB;
@@ -21,17 +27,24 @@ function fileExtension(name: string) {
   return name.split(".").pop()?.toLowerCase() || "";
 }
 
+const LARGE_IMAGE_THRESHOLD = 5 * MB;
+
 function getPreviewKind(file: DriveFile) {
   const ext = fileExtension(file.name);
   const mimeType = file.mimeType || "";
 
   if (mimeType.startsWith("video/") || ["mp4", "webm", "ogg", "mov"].includes(ext)) return "stream";
-  if (mimeType.startsWith("audio/") || ["mp3", "wav", "m4a", "flac", "ogg"].includes(ext)) return "stream";
+  if (mimeType.startsWith("audio/") || ["mp3", "wav", "m4a", "flac", "ogg", "opus", "oga", "caf", "aac", "dsf", "dff"].includes(ext)) return "stream";
   if (mimeType === "application/pdf" || ext === "pdf") return "stream";
   if (["txt", "md", "json", "js", "ts", "py", "rs", "go", "html", "css", "xml"].includes(ext)) return "stream";
 
-  if (mimeType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) return "image";
+  if (mimeType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
+    // Large images benefit from streaming (progressive render) instead of full memory download
+    if (file.size > LARGE_IMAGE_THRESHOLD) return "stream";
+    return "image";
+  }
   if (["xlsx", "xls", "csv", "docx"].includes(ext)) return "office";
+  if (ext === "epub") return "memory";
 
   return "unsupported";
 }
@@ -84,6 +97,7 @@ export default function App() {
     switchAccount,
     removeAccount,
     logout,
+    clearCache,
   } = useAuth();
 
   const {
@@ -119,6 +133,11 @@ export default function App() {
     getRecentFiles,
     getAllFiles,
     deleteFilesBatch,
+    moveFilesBatch,
+    copyFilesBatch,
+    favouriteFiles,
+    loadFavourites,
+    toggleFavourite,
   } = useFiles();
 
   const [booting, setBooting] = useState(true);
@@ -126,6 +145,7 @@ export default function App() {
   
   // Preview state
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
+  const [previewMoveCopyFile, setPreviewMoveCopyFile] = useState<DriveFile | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewProgress, setPreviewProgress] = useState<number | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -166,6 +186,60 @@ export default function App() {
       setToast((t) => ({ ...t, show: false }));
     }, 4000);
   }, []);
+
+  // File sharing states
+  const [fileSharingEnabled, setFileSharingEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("tg_file_sharing_enabled") === "true";
+  });
+  const [workerUrl, setWorkerUrl] = useState<string>(() => {
+    return localStorage.getItem("tg_worker_url") || DEFAULT_WORKER_URL;
+  });
+  const [sharingFile, setSharingFile] = useState<DriveFile | null>(null);
+  const [receiveShareOpen, setReceiveShareOpen] = useState(false);
+  const [receiveShareHash, setReceiveShareHash] = useState("");
+  const [renameTarget, setRenameTarget] = useState<{
+    type: "file" | "folder";
+    file?: DriveFile;
+    folder?: TopicFolder;
+  } | null>(null);
+
+  // Check URL share query param on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shareParam = params.get("share");
+    if (shareParam) {
+      setReceiveShareHash(shareParam);
+      setReceiveShareOpen(true);
+    }
+  }, []);
+
+  const handleToggleFileSharing = async () => {
+    const nextState = !fileSharingEnabled;
+    setFileSharingEnabled(nextState);
+    localStorage.setItem("tg_file_sharing_enabled", String(nextState));
+
+    if (nextState) {
+      if (client && driveConfig) {
+        triggerToast("Checking @clashdrivebot admin permissions...", "info");
+        const status = await ensureBotIsAdmin(client, driveConfig);
+        if (status.success) {
+          triggerToast(status.message, "success");
+        } else {
+          triggerToast(status.message, "error");
+        }
+      } else {
+        triggerToast("File sharing enabled. Bot will be auto-invited once connected.", "info");
+      }
+    } else {
+      triggerToast("File sharing disabled.", "info");
+    }
+  };
+
+  const handleUpdateWorkerUrl = (url: string) => {
+    setWorkerUrl(url);
+    localStorage.setItem("tg_worker_url", url);
+    triggerToast("Worker URL updated successfully", "success");
+  };
 
   const [confirmState, setConfirmState] = useState<{
     show: boolean;
@@ -223,6 +297,18 @@ export default function App() {
     }
   }, [client, userProfile, triggerToast]);
 
+  const handleClearCache = useCallback(() => {
+    triggerConfirm(
+      "Clear Cache & Reset All Sessions",
+      "This will erase all cached data, stored account credentials, sessions, and log out completely. Proceed?",
+      async () => {
+        await clearCache();
+        resetDrive();
+        triggerToast("Cache and stored sessions cleared completely.", "success");
+      }
+    );
+  }, [clearCache, resetDrive, triggerConfirm, triggerToast]);
+
   const handleSkipJoinChannel = useCallback(() => {
     if (userProfile?.id) {
       localStorage.setItem(`tgcd_prompted_join_${userProfile.id}`, "true");
@@ -237,6 +323,44 @@ export default function App() {
       setBooting(false);
     })();
   }, [tryAutoConnect]);
+
+  // Load Favourite folder files on setup to sync star states
+  useEffect(() => {
+    if (client && driveConfig && topics.length > 0) {
+      const favFolder = topics.find(
+        (t) => t.title.toLowerCase() === "favourite" || t.title.toLowerCase() === "favorite"
+      );
+      if (favFolder) {
+        loadFavourites(client, driveConfig, favFolder.id).catch((err) => {
+          console.warn("Failed to load favourites on startup:", err);
+        });
+      }
+    }
+  }, [client, driveConfig, topics, loadFavourites]);
+
+  const favouriteChunks = useMemo(() => {
+    return new Set(favouriteFiles.map((f) => f.manifest.chunks.join(",")));
+  }, [favouriteFiles]);
+
+  const handleToggleLike = useCallback(
+    async (file: DriveFile) => {
+      if (!client || !driveConfig) return;
+      const favFolder = topics.find(
+        (t) => t.title.toLowerCase() === "favourite" || t.title.toLowerCase() === "favorite"
+      );
+      if (!favFolder) {
+        triggerToast("Favourite folder not initialized. Please wait or refresh.", "error");
+        return;
+      }
+      try {
+        await toggleFavourite(client, driveConfig, file, favFolder.id);
+      } catch (err) {
+        console.error("Failed to toggle favourite state:", err);
+        triggerToast("Failed to update Favourite status.", "error");
+      }
+    },
+    [client, driveConfig, topics, toggleFavourite, triggerToast]
+  );
 
   // Handle Service Worker streaming requests
   useEffect(() => {
@@ -313,15 +437,9 @@ export default function App() {
     [client, removeFolder, activeFolderId, triggerConfirm, triggerToast]
   );
 
-  const handleRenameFolder = useCallback(
-    async (folder: TopicFolder) => {
-      if (!client) return;
-      const nextName = prompt("Rename folder", folder.title)?.trim();
-      if (!nextName || nextName === folder.title) return;
-      await renameFolder(client, folder.id, nextName);
-    },
-    [client, renameFolder]
-  );
+  const handleRenameFolder = useCallback((folder: TopicFolder) => {
+    setRenameTarget({ type: "folder", folder });
+  }, []);
 
   const handleFileDrop = useCallback(
     async (droppedFiles: File[]) => {
@@ -362,25 +480,70 @@ export default function App() {
     [client, driveConfig, deleteFile, triggerConfirm, triggerToast]
   );
 
-  const handleRenameFile = useCallback(
-    async (file: DriveFile) => {
-      if (!client || !driveConfig) return;
-      const rawName = prompt("Rename file", file.name)?.trim();
-      if (!rawName || rawName === file.name) return;
+  const handleRenameFile = useCallback((file: DriveFile) => {
+    setRenameTarget({ type: "file", file });
+  }, []);
 
-      const nextName = normalizeRenamedFileName(file, rawName);
-      if (!nextName || nextName === file.name) return;
+  const handleConfirmRename = useCallback(
+    async (newName: string) => {
+      if (!renameTarget || !client) return;
 
-      await renameFile(client, driveConfig, file, nextName);
-      if (previewFile?.id === file.id) {
-        setPreviewFile({
-          ...file,
-          name: nextName,
-          manifest: { ...file.manifest, fileName: nextName },
-        });
+      if (renameTarget.type === "folder" && renameTarget.folder) {
+        await renameFolder(client, renameTarget.folder.id, newName);
+      } else if (renameTarget.type === "file" && renameTarget.file && driveConfig) {
+        const file = renameTarget.file;
+        const nextName = normalizeRenamedFileName(file, newName);
+        if (!nextName || nextName === file.name) return;
+
+        await renameFile(client, driveConfig, file, nextName);
+        if (previewFile?.id === file.id) {
+          setPreviewFile({
+            ...file,
+            name: nextName,
+            manifest: { ...file.manifest, fileName: nextName },
+          });
+        }
       }
     },
-    [client, driveConfig, renameFile, previewFile]
+    [client, driveConfig, renameFolder, renameFile, renameTarget, previewFile]
+  );
+
+  const handleMoveFile = useCallback(
+    async (filesToMove: DriveFile[], targetFolderId: number) => {
+      if (!client || !driveConfig) return false;
+      const ok = await moveFilesBatch(client, driveConfig, filesToMove, targetFolderId);
+      if (ok) {
+        const folder = topics.find((t) => t.id === targetFolderId);
+        const folderName = folder ? folder.title : "folder";
+        triggerToast(
+          filesToMove.length === 1
+            ? `Moved "${filesToMove[0].name}" to ${folderName}`
+            : `Moved ${filesToMove.length} files to ${folderName}`,
+          "success"
+        );
+      }
+      return ok;
+    },
+    [client, driveConfig, moveFilesBatch, topics, triggerToast]
+  );
+
+  const handleCopyFile = useCallback(
+    async (filesToCopy: DriveFile[], targetFolderId: number) => {
+      if (!client || !driveConfig) return false;
+      const ok = await copyFilesBatch(client, driveConfig, filesToCopy, targetFolderId);
+      if (ok) {
+        const folder = topics.find((t) => t.id === targetFolderId);
+        const folderName = folder ? folder.title : "folder";
+        triggerToast(
+          filesToCopy.length === 1
+            ? `Copied "${filesToCopy[0].name}" to ${folderName}`
+            : `Copied ${filesToCopy.length} files to ${folderName}`,
+          "success"
+        );
+      }
+      return ok;
+    },
+    [client, driveConfig, copyFilesBatch, topics, triggerToast]
   );
 
   const handlePreview = useCallback(
@@ -434,17 +597,19 @@ export default function App() {
             throw new Error("The browser stream worker is not ready yet. Refresh once and try again.");
           }
 
+          // Fire-and-forget: pre-cache chunk 0 and pre-fetch message objects in parallel.
+          // When the <video>/<audio> element issues its first range request via the service worker,
+          // chunk 0 will already be in memory cache → instant playback start.
+          const fileId = file.id.toString();
+          Promise.all([
+            downloadChunkToCache(client, driveConfig, fileId, file.manifest, 0).catch((err) => {
+              console.warn("Chunk 0 pre-cache failed; stream will fetch on demand:", err);
+            }),
+            preFetchMessages(client, driveConfig, file.manifest).catch((err) => {
+              console.warn("Message prefetch failed; live stream will fetch on demand:", err);
+            }),
+          ]);
           setPreviewUrl(`/stream/${file.id}`);
-
-          preFetchMessages(client, driveConfig, file.manifest).catch((err) => {
-            console.warn("Message prefetch failed; live stream will fetch on demand:", err);
-          });
-
-          if (file.manifest.chunks.length > 0) {
-            downloadChunkToCache(client, driveConfig, file.id.toString(), file.manifest, 0).catch((err) => {
-              console.warn("Prefetching chunk 0 to cache failed:", err);
-            });
-          }
         } catch (err) {
           console.error("Streaming preview failed:", err);
           if (isCurrentPreview()) {
@@ -455,7 +620,9 @@ export default function App() {
         return;
       }
 
-      if (file.size > MAX_MEMORY_PREVIEW_BYTES) {
+      const ext = fileExtension(file.name);
+      const limit = ["dsf", "dff"].includes(ext) ? 800 * MB : MAX_MEMORY_PREVIEW_BYTES;
+      if (file.size > limit) {
         setPreviewProgress(null);
         setPreviewError("This file is too large for a memory preview. Download it to open it locally.");
         return;
@@ -574,6 +741,7 @@ export default function App() {
   return (
     <>
       <Dashboard
+        client={client}
         driveConfig={driveConfig}
         topics={topics}
         files={files}
@@ -592,6 +760,8 @@ export default function App() {
         onCancelDownload={cancelDownload}
         onRenameFile={handleRenameFile}
         onDeleteFile={handleDeleteFile}
+        onMoveFile={handleMoveFile}
+        onCopyFile={handleCopyFile}
         onLogout={handleLogout}
         userProfile={userProfile}
         accounts={accounts}
@@ -612,8 +782,18 @@ export default function App() {
         setTheme={setTheme}
         onJoinUpdateChannel={handleJoinUpdateChannel}
         joiningChannel={joiningChannel}
+        onClearCache={handleClearCache}
         triggerConfirm={triggerConfirm}
         triggerToast={triggerToast}
+        favouriteChunks={favouriteChunks}
+        onToggleLike={handleToggleLike}
+        onShare={(file) => setSharingFile(file)}
+        fileSharingEnabled={fileSharingEnabled}
+        onToggleFileSharing={handleToggleFileSharing}
+        onOpenReceiveShare={(hash?: string) => {
+          setReceiveShareHash(hash || "");
+          setReceiveShareOpen(true);
+        }}
       />
     
     {previewFile && (
@@ -623,6 +803,9 @@ export default function App() {
         url={previewUrl}
         progress={previewProgress}
         error={previewError}
+        isLiked={favouriteChunks.has(previewFile.manifest.chunks.join(","))}
+        onToggleLike={() => handleToggleLike(previewFile)}
+        onOpenMoveCopy={() => setPreviewMoveCopyFile(previewFile)}
         onDownload={() => handleDownload(previewFile)}
         onClose={() => {
           if (previewAbortControllerRef.current) {
@@ -637,6 +820,68 @@ export default function App() {
           setPreviewProgress(null);
           setPreviewError(null);
         }}
+      />
+    )}
+
+    {previewMoveCopyFile && (
+      <MoveCopyModal
+        open={Boolean(previewMoveCopyFile)}
+        onClose={() => setPreviewMoveCopyFile(null)}
+        files={[previewMoveCopyFile]}
+        folders={topics}
+        onMove={async (targetFolderId) => {
+          if (previewMoveCopyFile) {
+            await handleMoveFile([previewMoveCopyFile], targetFolderId);
+          }
+        }}
+        onCopy={async (targetFolderId) => {
+          if (previewMoveCopyFile) {
+            await handleCopyFile([previewMoveCopyFile], targetFolderId);
+          }
+        }}
+      />
+    )}
+
+    {/* File Sharing Modals */}
+    {sharingFile && (
+      <ShareModal
+        file={sharingFile}
+        driveConfig={driveConfig}
+        onClose={() => setSharingFile(null)}
+      />
+    )}
+
+    {receiveShareOpen && (
+      <ReceiveShareModal
+        initialHash={receiveShareHash}
+        workerUrl={workerUrl}
+        driveConfig={driveConfig}
+        topics={topics}
+        activeFolderId={activeFolderId}
+        onClose={() => {
+          setReceiveShareOpen(false);
+          setReceiveShareHash("");
+        }}
+        onSuccess={(targetTopicId) => {
+          if (client && driveConfig) {
+            const topicToLoad = targetTopicId ?? activeFolderId ?? (topics.length > 0 ? topics[0].id : 0);
+            loadFiles(client, driveConfig, topicToLoad, true);
+          }
+        }}
+      />
+    )}
+
+    {renameTarget && (
+      <RenameModal
+        open={Boolean(renameTarget)}
+        onClose={() => setRenameTarget(null)}
+        initialName={
+          renameTarget.type === "folder"
+            ? renameTarget.folder?.title || ""
+            : renameTarget.file?.name || ""
+        }
+        itemType={renameTarget.type}
+        onSubmit={handleConfirmRename}
       />
     )}
 

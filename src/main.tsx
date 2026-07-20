@@ -34,8 +34,7 @@ import "./index.css";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    // Use cache-busting version parameter to ensure updates are fetched immediately on refresh
-    navigator.serviceWorker.register("/sw.js?v=" + Date.now()).catch((err) => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
       console.error("ServiceWorker registration failed: ", err);
     });
   });

@@ -21,7 +21,7 @@ export function Button({
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
-      // Ripple effect
+      // M3 ripple effect
       const btn = btnRef.current;
       if (btn) {
         const rect = btn.getBoundingClientRect();
@@ -38,38 +38,39 @@ export function Button({
           background: currentColor;
           transform: translate(-50%, -50%);
           pointer-events: none;
-          animation: ripple-spread 0.5s ease-out forwards;
+          animation: ripple-spread 0.45s ease-out forwards;
         `;
         btn.appendChild(ripple);
-        setTimeout(() => ripple.remove(), 500);
+        setTimeout(() => ripple.remove(), 450);
       }
       onClick?.(e);
     },
     [onClick]
   );
 
+  // M3 buttons: label-large (font-semibold), rounded-[20px] for standard, rounded-full for icon/FAB
   const base =
-    "relative inline-flex items-center justify-center font-extrabold rounded-full transition-all duration-250 ease-out cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.96] overflow-hidden";
+    "relative inline-flex items-center justify-center font-semibold rounded-[20px] transition-all duration-200 ease-out cursor-pointer select-none focus:outline-none focus-visible:ring-3 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.97] overflow-hidden";
 
   const variants: Record<string, string> = {
     primary:
-      "bg-brand-500 text-white hover:bg-brand-600 active:brightness-95 border border-transparent shadow-sm hover:shadow-md transition-shadow",
+      "bg-md-primary text-md-on-primary hover:shadow-md active:brightness-95 border border-transparent",
     secondary:
-      "bg-surface-200 text-surface-900 dark:bg-surface-300/20 dark:text-surface-900 hover:bg-surface-300 dark:hover:bg-surface-300/35 border border-transparent",
+      "bg-md-secondary-container text-md-on-secondary-container hover:shadow-sm border border-transparent",
     ghost:
-      "bg-transparent text-surface-800 dark:text-surface-700 hover:bg-surface-200/50 dark:hover:bg-surface-200/10 active:bg-surface-300/30",
+      "bg-transparent text-md-on-surface-variant hover:bg-md-surface-container-high active:bg-md-surface-container-highest",
     danger:
-      "bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 hover:border-danger/30 active:bg-danger/30",
+      "bg-md-error-container text-md-on-error-container border border-transparent hover:shadow-sm",
     glass:
-      "bg-surface-100/30 text-surface-900 border border-surface-300/30 dark:border-surface-300/10 backdrop-blur-md hover:bg-surface-200/50 hover:border-surface-400/40 active:bg-surface-350/40",
+      "bg-md-surface-container text-md-on-surface border border-md-outline-variant hover:bg-md-surface-container-high",
     icon:
-      "bg-transparent text-surface-600 dark:text-surface-500 hover:bg-surface-200/65 dark:hover:bg-surface-200/15 hover:text-surface-900 dark:hover:text-surface-900 rounded-full p-0 border border-transparent",
+      "bg-transparent text-md-on-surface-variant hover:bg-md-surface-container-highest rounded-full p-0 border border-transparent",
   };
 
   const sizes: Record<string, string> = {
-    sm: "text-xs px-3.5 py-2.5 gap-1.5",
-    md: "text-sm px-5 py-3 gap-2",
-    lg: "text-base px-7 py-4 gap-2.5",
+    sm: "text-xs px-4 py-2 gap-1.5 min-h-[32px]",
+    md: "text-sm px-6 py-2.5 gap-2 min-h-[40px]",
+    lg: "text-sm px-8 py-3 gap-2.5 min-h-[48px]",
   };
 
   // Icon variant overrides size to fixed square

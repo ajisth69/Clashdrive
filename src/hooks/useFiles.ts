@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { TelegramClient } from "telegram";
+import { TelegramClient, Api } from "telegram";
+import bigInt from "big-integer";
 import { listFilesInTopic } from "../lib/downloader";
 import { uploadFile as uploadFileLib } from "../lib/uploader";
 import { deleteDriveFile, downloadFile as downloadFileLib, normalizeRenamedFileName, renameDriveFile } from "../lib/downloader";
@@ -32,6 +33,7 @@ export function useFiles() {
   const [indexingProgress, setIndexingProgress] = useState({ current: 0, total: 0 });
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [favouriteFiles, setFavouriteFiles] = useState<DriveFile[]>([]);
   const fileCache = useRef<Map<number, DriveFile[]>>(new Map());
   const uploadQueue = useRef<(() => Promise<void>)[]>([]);
   const activeUploadCount = useRef<number>(0);
@@ -376,6 +378,254 @@ export function useFiles() {
   );
 
   /**
+   * Duplicates a file's chunk payload messages AND thumbnail message on Telegram using ForwardMessages.
+   * This creates new, independent message IDs on Telegram servers for all file data (payload + thumbnail)
+   * with ZERO network bandwidth overhead.
+   */
+  const duplicateFilePayloadAndThumb = useCallback(
+    async (
+      client: TelegramClient,
+      config: DriveConfig,
+      file: DriveFile,
+      targetFolderId: number
+    ): Promise<{ newChunkIds: number[]; newThumbId?: number }> => {
+      const peer = new Api.InputPeerChannel({
+        channelId: bigInt(config.chatId),
+        accessHash: bigInt(config.accessHash),
+      });
+
+      const hasThumb = typeof file.manifest.thumb === "number";
+      const allIdsToForward = [
+        ...(hasThumb ? [file.manifest.thumb!] : []),
+        ...file.manifest.chunks,
+      ];
+
+      const forwardedMap = new Map<number, number>();
+      const BATCH_SIZE = 100;
+
+      for (let i = 0; i < allIdsToForward.length; i += BATCH_SIZE) {
+        const slice = allIdsToForward.slice(i, i + BATCH_SIZE);
+        try {
+          const randomIds = slice.map(() => bigInt(Math.floor(Math.random() * 1e9)));
+          const res: any = await client.invoke(
+            new Api.messages.ForwardMessages({
+              fromPeer: peer,
+              toPeer: peer,
+              id: slice,
+              randomId: randomIds,
+              topMsgId: targetFolderId > 0 ? targetFolderId : undefined,
+              dropAuthor: true,
+            })
+          );
+
+          let newIds: number[] = [];
+
+          // 1. Try res.messages array (GramJS populates this directly for ForwardMessages)
+          if (res && Array.isArray(res.messages)) {
+            const validMsgs = res.messages.filter(
+              (m: any) => m && typeof m.id === "number" && (m.className === "Message" || m instanceof Api.Message)
+            );
+            if (validMsgs.length === slice.length) {
+              newIds = validMsgs.map((m: any) => m.id);
+            }
+          }
+
+          // 2. Fallback: Parse res.updates specifically for UpdateNewChannelMessage or UpdateNewMessage
+          if (newIds.length === 0 && res && Array.isArray(res.updates)) {
+            const channelMsgIds: number[] = [];
+            for (const u of res.updates) {
+              if (
+                (u?.className === "UpdateNewChannelMessage" ||
+                 u instanceof Api.UpdateNewChannelMessage ||
+                 u?.className === "UpdateNewMessage" ||
+                 u instanceof Api.UpdateNewMessage) &&
+                u?.message &&
+                typeof u.message.id === "number"
+              ) {
+                channelMsgIds.push(u.message.id);
+              }
+            }
+            if (channelMsgIds.length === slice.length) {
+              newIds = channelMsgIds;
+            }
+          }
+
+          if (newIds.length === slice.length) {
+            slice.forEach((oldId, idx) => {
+              forwardedMap.set(oldId, newIds[idx]);
+            });
+          } else {
+            console.warn("Extracted forwarded ID count mismatch, falling back to original IDs for slice");
+            slice.forEach((oldId) => forwardedMap.set(oldId, oldId));
+          }
+        } catch (err) {
+          console.warn("Failed to forward chunk/thumb messages, using original IDs as fallback:", err);
+          slice.forEach((oldId) => forwardedMap.set(oldId, oldId));
+        }
+      }
+
+      const newThumbId = hasThumb ? forwardedMap.get(file.manifest.thumb!) : undefined;
+      const newChunkIds = file.manifest.chunks.map(
+        (oldId) => forwardedMap.get(oldId) ?? oldId
+      );
+
+      return { newChunkIds, newThumbId };
+    },
+    []
+  );
+
+  const moveFile = useCallback(
+    async (
+      client: TelegramClient,
+      config: DriveConfig,
+      file: DriveFile,
+      targetFolderId: number
+    ) => {
+      if (file.topicId === targetFolderId) return true;
+      await ensureConnected();
+
+      const peer = new Api.InputPeerChannel({
+        channelId: bigInt(config.chatId),
+        accessHash: bigInt(config.accessHash),
+      });
+
+      // Forward chunks and thumbnail to target topic so all data moves to the new topic on Telegram
+      const { newChunkIds, newThumbId } = await duplicateFilePayloadAndThumb(
+        client,
+        config,
+        file,
+        targetFolderId
+      );
+
+      const isPayloadDuplicated = newChunkIds.some(
+        (id, idx) => id !== file.manifest.chunks[idx]
+      );
+
+      // Delete old manifest message (and ONLY delete old chunk/thumb messages if new payload messages were actually duplicated!)
+      try {
+        const idsToDelete = [
+          file.id,
+          ...(isPayloadDuplicated
+            ? [
+                ...(file.manifest.thumb ? [file.manifest.thumb] : []),
+                ...file.manifest.chunks,
+              ]
+            : []),
+        ];
+        await client.deleteMessages(peer, idsToDelete, { revoke: true });
+      } catch (err) {
+        console.warn("Failed to delete old messages during move:", err);
+      }
+
+      const newManifest = {
+        ...file.manifest,
+        chunks: newChunkIds,
+        ...(newThumbId !== undefined ? { thumb: newThumbId } : {}),
+      };
+
+      const manifestStr = JSON.stringify(newManifest);
+      const resMsg = await client.sendMessage(config.chatId, {
+        message: manifestStr,
+        replyTo: targetFolderId > 0 ? targetFolderId : undefined,
+      });
+
+      const movedFile: DriveFile = {
+        ...file,
+        id: resMsg.id,
+        topicId: targetFolderId,
+        manifest: newManifest,
+      };
+
+      fileCache.current.delete(file.topicId);
+      fileCache.current.delete(targetFolderId);
+
+      setFiles((prev) =>
+        prev
+          .map((f) => (f.id === file.id ? movedFile : f))
+          .filter((f) => f.topicId !== file.topicId || f.id === movedFile.id)
+      );
+
+      return true;
+    },
+    [duplicateFilePayloadAndThumb]
+  );
+
+  const copyFile = useCallback(
+    async (
+      client: TelegramClient,
+      config: DriveConfig,
+      file: DriveFile,
+      targetFolderId: number
+    ) => {
+      await ensureConnected();
+
+      // Forward chunk & thumbnail messages to target folder topic to create independent payload copy on Telegram
+      const { newChunkIds, newThumbId } = await duplicateFilePayloadAndThumb(
+        client,
+        config,
+        file,
+        targetFolderId
+      );
+
+      const newManifest = {
+        ...file.manifest,
+        chunks: newChunkIds,
+        ...(newThumbId !== undefined ? { thumb: newThumbId } : {}),
+      };
+
+      const manifestStr = JSON.stringify(newManifest);
+      const resMsg = await client.sendMessage(config.chatId, {
+        message: manifestStr,
+        replyTo: targetFolderId > 0 ? targetFolderId : undefined,
+      });
+
+      const copiedFile: DriveFile = {
+        ...file,
+        id: resMsg.id,
+        topicId: targetFolderId,
+        manifest: newManifest,
+      };
+
+      fileCache.current.delete(targetFolderId);
+
+      setFiles((prev) => [copiedFile, ...prev]);
+
+      return true;
+    },
+    [duplicateFilePayloadAndThumb]
+  );
+
+  const moveFilesBatch = useCallback(
+    async (
+      client: TelegramClient,
+      config: DriveConfig,
+      filesToMove: DriveFile[],
+      targetFolderId: number
+    ) => {
+      for (const file of filesToMove) {
+        await moveFile(client, config, file, targetFolderId);
+      }
+      return true;
+    },
+    [moveFile]
+  );
+
+  const copyFilesBatch = useCallback(
+    async (
+      client: TelegramClient,
+      config: DriveConfig,
+      filesToCopy: DriveFile[],
+      targetFolderId: number
+    ) => {
+      for (const file of filesToCopy) {
+        await copyFile(client, config, file, targetFolderId);
+      }
+      return true;
+    },
+    [copyFile]
+  );
+
+  /**
    * Clear completed uploads from the progress list.
    */
   const clearFinishedUploads = useCallback(() => {
@@ -488,7 +738,69 @@ export function useFiles() {
     []
   );
 
+  const loadFavourites = useCallback(
+    async (client: TelegramClient, config: DriveConfig, favFolderId: number) => {
+      await ensureConnected();
+      const result = await listFilesInTopic(client, config, favFolderId);
+      fileCache.current.set(favFolderId, result);
+      setFavouriteFiles(result);
+      return result;
+    },
+    []
+  );
+
+  const toggleFavourite = useCallback(
+    async (client: TelegramClient, config: DriveConfig, file: DriveFile, favFolderId: number) => {
+      const existing = favouriteFiles.find(
+        (f) =>
+          f.name === file.name &&
+          f.size === file.size &&
+          f.manifest.chunks.join(",") === file.manifest.chunks.join(",")
+      );
+
+      if (existing) {
+        const peer = new Api.InputPeerChannel({
+          channelId: bigInt(config.chatId),
+          accessHash: bigInt(config.accessHash),
+        });
+        await client.deleteMessages(peer, [existing.id], { revoke: true });
+        
+        const nextFavs = favouriteFiles.filter((f) => f.id !== existing.id);
+        setFavouriteFiles(nextFavs);
+        fileCache.current.set(favFolderId, nextFavs);
+        
+        setFiles((prev) => prev.filter((f) => f.id !== existing.id));
+      } else {
+        const manifestStr = JSON.stringify(file.manifest);
+        const resMsg = await client.sendMessage(config.chatId, {
+          message: manifestStr,
+          replyTo: favFolderId,
+        });
+        const newFav: DriveFile = {
+          ...file,
+          id: resMsg.id,
+          topicId: favFolderId,
+        };
+        const nextFavs = [...favouriteFiles, newFav];
+        setFavouriteFiles(nextFavs);
+        fileCache.current.set(favFolderId, nextFavs);
+        
+        // If we are currently viewing the Favourite folder, update active files list
+        setFiles((prev) => {
+          if (prev.length > 0 && prev[0].topicId === favFolderId) {
+            return nextFavs;
+          }
+          return prev;
+        });
+      }
+    },
+    [favouriteFiles]
+  );
+
   return {
+    favouriteFiles,
+    loadFavourites,
+    toggleFavourite,
     files,
     loadingFiles,
     uploads,
@@ -509,5 +821,9 @@ export function useFiles() {
     getRecentFiles,
     getAllFiles,
     deleteFilesBatch,
+    moveFile,
+    copyFile,
+    moveFilesBatch,
+    copyFilesBatch,
   };
 }

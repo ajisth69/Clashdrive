@@ -3,11 +3,20 @@ import React, { useEffect, useState, useRef } from "react";
 interface ModalProps {
   open: boolean;
   onClose: () => void;
-  title: string;
+  title?: string;
+  size?: "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
+  noPadding?: boolean;
   children: React.ReactNode;
 }
 
-export function Modal({ open, onClose, title, children }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  size = "md",
+  noPadding = false,
+  children,
+}: ModalProps) {
   const [closing, setClosing] = useState(false);
   const modalRef = useRef<HTMLDivElement | null>(null);
 
@@ -39,46 +48,59 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
     setTimeout(() => {
       setClosing(false);
       onClose();
-    }, 250);
+    }, 220);
   };
 
   if (!open && !closing) return null;
 
+  const sizeClasses: Record<string, string> = {
+    sm: "max-w-sm",
+    md: "max-w-md",
+    lg: "max-w-lg",
+    xl: "max-w-2xl",
+    "2xl": "max-w-3xl",
+    "3xl": "max-w-4xl",
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
+      {/* M3 Scrim: 32% opacity */}
       <div
-        className={`absolute inset-0 bg-black/60 dark:bg-black/80 ${closing ? "animate-backdrop-exit" : "animate-backdrop-enter"}`}
-        style={{ backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)" }}
+        className={`absolute inset-0 bg-md-inverse-surface/32 ${closing ? "animate-backdrop-exit" : "animate-backdrop-enter"}`}
+        style={{ backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
         onClick={handleClose}
       />
-      {/* Panel */}
+      {/* M3 Dialog: 28px radius, surface-container-high bg */}
       <div
         ref={modalRef}
-        className={`relative bg-surface-100 dark:bg-surface-200 rounded-[28px] p-6 sm:p-7 w-full max-w-md mx-auto border border-surface-300/60 dark:border-surface-300/15 shadow-2xl ${closing ? "animate-spring-out" : "animate-spring-in"}`}
+        className={`relative bg-md-surface-container-high rounded-[28px] ${noPadding ? "p-0 overflow-hidden" : "p-6 overflow-y-auto scrollbar-thin"} w-full ${sizeClasses[size]} mx-auto border border-md-outline-variant/20 max-h-[90vh] ${closing ? "animate-spring-out" : "animate-spring-in"}`}
+        style={{ boxShadow: "var(--md-elevation-3)" }}
       >
-        <div className="flex items-center justify-between mb-5 select-none">
-          <h3 className="text-base sm:text-lg font-bold text-surface-900 tracking-tight">{title}</h3>
-          <button
-            onClick={handleClose}
-            className="text-surface-500 hover:text-surface-900 dark:hover:text-surface-800 transition-all p-1.5 rounded-xl hover:bg-surface-200/80 dark:hover:bg-surface-300/10 cursor-pointer active:scale-90"
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+        {title && (
+          <div className="flex items-center justify-between mb-5 select-none">
+            <h3 className="text-lg font-semibold text-md-on-surface tracking-tight">{title}</h3>
+            <button
+              onClick={handleClose}
+              className="text-md-on-surface-variant hover:text-md-on-surface transition-all p-2 rounded-full hover:bg-md-surface-container-highest cursor-pointer active:scale-90"
+              title="Close Modal"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
-        </div>
-        <div className="space-y-4">
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+        )}
+        <div className={title && !noPadding ? "space-y-4" : ""}>
           {children}
         </div>
       </div>
